@@ -1,0 +1,44 @@
+name: Validate
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+
+jobs:
+  hassfest:
+    name: Hassfest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: home-assistant/actions/hassfest@master
+
+  hacs:
+    name: HACS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hacs/action@main
+        with:
+          category: integration
+
+  tests:
+    name: Pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The library is not yet on PyPI; resolve it from the sibling checkout that
+      # tool.uv.sources points at (../comed-hourly-pricing). Drop this step once
+      # comed-hourly-pricing is published and the path source is removed.
+      - name: Check out comed-hourly-pricing
+        uses: actions/checkout@v4
+        with:
+          repository: jasonl/comed-hourly-pricing
+          path: comed-hourly-pricing-src
+      - name: Position sibling checkout
+        run: mv comed-hourly-pricing-src ../comed-hourly-pricing
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Run tests
+        run: uv run --group dev pytest

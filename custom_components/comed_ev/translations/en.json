@@ -1,0 +1,67 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "ComEd EV Charging",
+        "description": "Charge your EV in the cheapest ComEd hours. The integration reads SOC/target/rate from your entities and publishes a charge_now signal; you wire the charger via your own automation.",
+        "data": {
+          "capacity_kwh": "Battery capacity (kWh)",
+          "efficiency": "Charging efficiency (0-1)",
+          "current_soc_entity": "Current state-of-charge entity",
+          "target_soc_entity": "Target state-of-charge entity",
+          "charge_rate_kw": "Charge rate (kW, constant)",
+          "charge_rate_entity": "Charge rate entity (overrides constant)",
+          "departure_entity": "Departure time entity (optional)",
+          "threshold_mode": "Threshold mode"
+        }
+      },
+      "manual": {
+        "title": "Manual thresholds",
+        "description": "Pre-filled from the current ComEd price distribution. Adjust if you prefer.",
+        "data": {
+          "price_floor": "Price floor — always charge below (¢/kWh)",
+          "price_ceiling": "Price ceiling — realistic max near empty (¢/kWh)"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "ComEd EV Charging options",
+        "data": {
+          "threshold_mode": "Threshold mode",
+          "price_floor": "Price floor (¢/kWh, Manual mode)",
+          "price_ceiling": "Price ceiling (¢/kWh, Manual mode)",
+          "min_soc": "Urgency-full SOC (%)",
+          "gamma": "Curve steepness (gamma)",
+          "floor_pct": "Floor percentile",
+          "ceiling_pct": "Ceiling percentile",
+          "window_days": "History window (days)",
+          "poll_interval": "Poll interval (minutes)"
+        }
+      }
+    }
+  },
+  "selector": {
+    "threshold_mode": {
+      "options": {
+        "auto": "Auto (track analytics suggestion)",
+        "manual": "Manual (pin values)"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "current_price": { "name": "Current price" },
+      "hourly_price": { "name": "Hourly price" },
+      "charge_threshold": { "name": "Charge threshold" },
+      "suggested_floor": { "name": "Suggested floor" },
+      "suggested_ceiling": { "name": "Suggested ceiling" },
+      "projected_end_soc": { "name": "Projected end SOC" }
+    },
+    "binary_sensor": {
+      "charge_now": { "name": "Charge now" }
+    }
+  }
+}
