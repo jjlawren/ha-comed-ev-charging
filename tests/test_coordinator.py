@@ -39,7 +39,7 @@ def _entry(
 async def test_setup_creates_entities_and_decides(
     hass: HomeAssistant, mock_client
 ) -> None:
-    """A low SOC on a cheap live price turns charge_now on."""
+    """A low SOC on a cheap running hourly average turns charge_now on."""
     hass.states.async_set("sensor.ev_soc", "20")
     hass.states.async_set("number.ev_target", "80")
 
@@ -48,8 +48,8 @@ async def test_setup_creates_entities_and_decides(
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
-    # Live price from the sample feed's last point is 0.04 $/kWh -> 4 ¢/kWh.
-    price = hass.states.get("sensor.comed_ev_charging_current_price")
+    # Newest point of the newest-first feed is 0.04 $/kWh -> 4 ¢/kWh.
+    price = hass.states.get("sensor.comed_ev_charging_5_minute_spot_price")
     assert price is not None
     assert float(price.state) == 4.0
 
@@ -57,6 +57,82 @@ async def test_setup_creates_entities_and_decides(
     assert charge is not None
     assert charge.state == "on"
     assert charge.attributes["reason"] == "below_threshold"
+
+
+async def test_current_price_uses_newest_feed_point(
+    hass: HomeAssistant, mock_client
+) -> None:
+    """Current price is the newest point of the newest-first feed, not the oldest."""
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    from comed_hourly_pricing import PricePoint
+
+    central = ZoneInfo("America/Chicago")
+    base = datetime(2026, 8, 19, 3, 0, tzinfo=central)
+    # Newest-first: index 0 is the latest 5-minute point (0.07 $/kWh -> 7 ¢/kWh),
+    # index -1 is the oldest (0.01 $/kWh -> 1 ¢/kWh, the stale value the old bug used).
+    feed = (
+        PricePoint(base + timedelta(minutes=10), 0.07),
+        PricePoint(base + timedelta(minutes=5), 0.03),
+        PricePoint(base, 0.01),
+    )
+    mock_client.get_five_minute_feed.return_value = feed
+
+    hass.states.async_set("sensor.ev_soc", "20")
+    hass.states.async_set("number.ev_target", "80")
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    price = hass.states.get("sensor.comed_ev_charging_5_minute_spot_price")
+    assert price is not None
+    assert float(price.state) == 7.0  # newest, not the stale 1.0 at index -1
+
+
+async def test_decision_follows_hourly_average_not_five_minute(
+    hass: HomeAssistant, mock_client
+) -> None:
+    """A spike in the running hourly average keeps charging off even when the
+    latest 5-minute point is cheap — the decision compares the hourly average."""
+    # Latest 5-minute point is cheap (4 ¢/kWh from the sample feed) but the
+    # running hourly average is a 50 ¢/kWh spike, above any threshold.
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from comed_hourly_pricing import PricePoint
+
+    from custom_components.comed_ev.const import (
+        CONF_PRICE_CEILING,
+        CONF_PRICE_FLOOR,
+        CONF_THRESHOLD_MODE,
+        MODE_MANUAL,
+    )
+
+    central = ZoneInfo("America/Chicago")
+    mock_client.get_current_hour_average.return_value = PricePoint(
+        datetime.now(central), 0.5
+    )
+
+    hass.states.async_set("sensor.ev_soc", "20")  # low SOC -> high willingness
+    hass.states.async_set("number.ev_target", "80")
+    entry = _entry(
+        extra_options={
+            CONF_THRESHOLD_MODE: MODE_MANUAL,
+            CONF_PRICE_FLOOR: 3.0,
+            CONF_PRICE_CEILING: 14.0,
+        }
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    charge = hass.states.get("binary_sensor.comed_ev_charging_charge_now")
+    assert charge is not None
+    assert charge.state == "off"  # would be "on" if it used the cheap 5-min point
+    assert charge.attributes["reason"] == "above_threshold"
+    assert charge.attributes["decision_price"] == 50.0
 
 
 async def test_backfill_seeds_history_and_suggestion(
@@ -247,7 +323,7 @@ def _decision_data(coordinator, charge_now: bool):
         live_price=4.0,
         hourly_price=4.0,
         decision=ChargeDecision(
-            charge_now=charge_now, reason="", live_price=4.0, threshold=5.0
+            charge_now=charge_now, reason="", decision_price=4.0, threshold=5.0
         ),
         suggestion=coordinator._suggestion,
         effective_floor=3.0,
@@ -515,14 +591,20 @@ async def test_last_session_sensors_with_savings(
     assert float(savings.state) == pytest.approx(1.20)
 
 
-async def test_savings_sensor_absent_without_flat_rate(
+async def test_savings_sensor_unknown_without_flat_rate(
     hass: HomeAssistant, mock_client
 ) -> None:
-    """No flat-rate baseline -> the savings sensor is not created."""
+    """No flat-rate baseline -> the savings sensor exists but reports unknown.
+
+    The flat rate is now a live number entity (0 = disabled), so the sensor is
+    always created and simply has no value until a baseline is set.
+    """
     hass.states.async_set("sensor.ev_soc", "20")
     hass.states.async_set("number.ev_target", "80")
     await _build_coordinator(hass)
-    assert hass.states.get("sensor.comed_ev_charging_last_session_savings") is None
+    savings = hass.states.get("sensor.comed_ev_charging_last_session_savings")
+    assert savings is not None
+    assert savings.state == "unknown"
 
 
 async def test_get_sessions_service(hass: HomeAssistant, mock_client) -> None:

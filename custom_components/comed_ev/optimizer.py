@@ -1,8 +1,9 @@
 """Pure charge-decision logic — no Home Assistant imports.
 
 Everything here is offline-testable. Prices are in ¢/kWh, SOC in percent (0-100).
-The primary trigger is a SOC-driven price threshold compared against the live
-5-minute price. An optional departure adds an hourly feasibility override.
+The primary trigger is a SOC-driven price threshold compared against the running
+hourly average (the best proxy for the settled hour-average price actually paid).
+An optional departure adds an hourly feasibility override.
 """
 
 from __future__ import annotations
@@ -176,7 +177,7 @@ class ChargeDecision:
 
     charge_now: bool
     reason: str
-    live_price: float
+    decision_price: float
     threshold: float
     plan: ChargePlan | None = None
 
@@ -185,7 +186,7 @@ def should_charge_now(
     now: datetime,
     current_soc: float,
     target_soc: float,
-    live_price: float,
+    decision_price: float,
     *,
     price_floor: float,
     price_ceiling: float,
@@ -193,12 +194,17 @@ def should_charge_now(
     gamma: float = 2.5,
     plan: ChargePlan | None = None,
 ) -> ChargeDecision:
-    """Decide whether to charge right now against the live 5-minute price.
+    """Decide whether to charge right now against the running hourly average.
+
+    The price actually paid is the settled hourly average, which is not known
+    until the hour completes; the running current-hour average is the best live
+    proxy. A single 5-minute point is too noisy to decide on, so callers pass
+    the hourly average as `decision_price`.
 
     Decision order:
       1. target reached                    -> off  (target_reached)
       2. deadline configured, slack <= 0   -> on   (must_charge)
-      3. live_price < T(SOC)               -> on   (below_threshold)
+      3. decision_price < T(SOC)           -> on   (below_threshold)
       4. else                              -> off  (above_threshold)
     """
     del now  # part of the documented signature; decision uses `plan` for time context
@@ -211,12 +217,18 @@ def should_charge_now(
         gamma=gamma,
     )
     if current_soc >= target_soc:
-        return ChargeDecision(False, REASON_TARGET_REACHED, live_price, threshold, plan)
+        return ChargeDecision(
+            False, REASON_TARGET_REACHED, decision_price, threshold, plan
+        )
     if plan is not None and plan.slack_hours <= 0:
-        return ChargeDecision(True, REASON_MUST_CHARGE, live_price, threshold, plan)
-    if live_price < threshold:
-        return ChargeDecision(True, REASON_BELOW_THRESHOLD, live_price, threshold, plan)
-    return ChargeDecision(False, REASON_ABOVE_THRESHOLD, live_price, threshold, plan)
+        return ChargeDecision(True, REASON_MUST_CHARGE, decision_price, threshold, plan)
+    if decision_price < threshold:
+        return ChargeDecision(
+            True, REASON_BELOW_THRESHOLD, decision_price, threshold, plan
+        )
+    return ChargeDecision(
+        False, REASON_ABOVE_THRESHOLD, decision_price, threshold, plan
+    )
 
 
 def build_forecast(

@@ -31,6 +31,7 @@ async def async_get_config_entry_diagnostics(
     return {
         "config": async_redact_data(dict(entry.data), TO_REDACT),
         "options": dict(entry.options),
+        "settings": asdict(coordinator.settings),
         "state": {
             "live_price": data.live_price if data else None,
             "hourly_price": data.hourly_price if data else None,

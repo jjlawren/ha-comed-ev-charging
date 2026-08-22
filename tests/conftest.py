@@ -38,20 +38,20 @@ def _sample_points() -> tuple[PricePoint, ...]:
     base = datetime(2026, 8, 19, 3, 0, tzinfo=CENTRAL)
     from datetime import timedelta
 
-    # A cheap overnight run with one spike, in dollars/kWh.
+    # A cheap overnight run with one spike, in dollars/kWh, chronological order.
     prices = [0.02, 0.025, 0.03, 0.02, 0.5, 0.03, 0.04]
-    return tuple(
+    chronological = [
         PricePoint(base + timedelta(minutes=5 * i), p) for i, p in enumerate(prices)
-    )
+    ]
+    # The real ComEd feed is newest-first; return in that order so tests exercise
+    # the same ordering production sees (newest at index 0, oldest at index -1).
+    return tuple(reversed(chronological))
 
 
 @pytest.fixture
 def mock_client():
-    """Patch the library Client used by the coordinator and config flow."""
-    with (
-        patch("custom_components.comed_ev.coordinator.Client") as coord_cls,
-        patch("custom_components.comed_ev.config_flow.Client") as flow_cls,
-    ):
+    """Patch the library Client used by the coordinator."""
+    with patch("custom_components.comed_ev.coordinator.Client") as coord_cls:
         instance = AsyncMock()
         instance.get_five_minute_feed = AsyncMock(return_value=_sample_points())
         instance.get_current_hour_average = AsyncMock(
@@ -60,5 +60,4 @@ def mock_client():
         instance.get_dual = AsyncMock(return_value=())
         instance.get_next_day = AsyncMock(return_value=())
         coord_cls.return_value = instance
-        flow_cls.return_value = instance
         yield instance

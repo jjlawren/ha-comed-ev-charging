@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta
 from functools import partial
 import logging
@@ -48,7 +48,9 @@ from .const import (
     CONF_THRESHOLD_MODE,
     CONF_WINDOW_DAYS,
     DEFAULT_CEILING_PCT,
+    DEFAULT_DISTRIBUTION_RATE,
     DEFAULT_EFFICIENCY,
+    DEFAULT_FLAT_RATE,
     DEFAULT_FLOOR_PCT,
     DEFAULT_GAMMA,
     DEFAULT_MIN_SOC,
@@ -63,6 +65,7 @@ from .const import (
     ENERGY_DECAY_PER_DAY,
     HOURLY_FEED_INTERVAL,
     MODE_AUTO,
+    MODE_MANUAL,
     NEXT_DAY_PUBLISH_HOUR,
     OVERNIGHT_END_HOUR,
     SESSION_DB_FILENAME,
@@ -86,6 +89,50 @@ from .session_store import Session, SessionStore
 _LOGGER = logging.getLogger(__name__)
 
 type ComEdConfigEntry = ConfigEntry[ComEdCoordinator]
+
+
+@dataclass
+class ComEdSettings:
+    """Live tuning knobs, exposed as number/switch entities.
+
+    These were once config-flow options; they now live on the coordinator as the
+    single source of truth, persisted in the history store and adjustable at
+    runtime. `threshold_auto` True tracks the analytics suggestion; False pins the
+    manual floor/ceiling. `flat_rate` 0.0 disables the savings comparison.
+    """
+
+    threshold_auto: bool
+    price_floor: float
+    price_ceiling: float
+    min_soc: float
+    gamma: float
+    floor_pct: int
+    ceiling_pct: int
+    window_days: int
+    flat_rate: float
+    distribution_rate: float
+
+    @classmethod
+    def from_options(cls, options: dict) -> ComEdSettings:
+        """Seed from legacy config-flow options, falling back to defaults.
+
+        Lets existing installs carry their configured values forward on upgrade.
+        """
+        mode = options.get(CONF_THRESHOLD_MODE, DEFAULT_THRESHOLD_MODE)
+        return cls(
+            threshold_auto=mode == MODE_AUTO,
+            price_floor=options.get(CONF_PRICE_FLOOR, DEFAULT_PRICE_FLOOR),
+            price_ceiling=options.get(CONF_PRICE_CEILING, DEFAULT_PRICE_CEILING),
+            min_soc=options.get(CONF_MIN_SOC, DEFAULT_MIN_SOC),
+            gamma=options.get(CONF_GAMMA, DEFAULT_GAMMA),
+            floor_pct=options.get(CONF_FLOOR_PCT, DEFAULT_FLOOR_PCT),
+            ceiling_pct=options.get(CONF_CEILING_PCT, DEFAULT_CEILING_PCT),
+            window_days=options.get(CONF_WINDOW_DAYS, DEFAULT_WINDOW_DAYS),
+            flat_rate=options.get(CONF_FLAT_RATE) or DEFAULT_FLAT_RATE,
+            distribution_rate=(
+                options.get(CONF_DISTRIBUTION_RATE) or DEFAULT_DISTRIBUTION_RATE
+            ),
+        )
 
 
 @dataclass
@@ -144,6 +191,9 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
             config_entry=entry,
             update_interval=timedelta(minutes=interval),
         )
+        # Live tuning knobs, seeded from legacy options (migration) and later
+        # overwritten by the persisted "settings" block in async_setup.
+        self.settings = ComEdSettings.from_options(dict(entry.options))
         self._client = Client(session=async_get_clientsession(hass))
         self._store: Store[dict] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         # (timestamp, price_cents) rolling history, oldest first.
@@ -201,6 +251,14 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
             decayed_at = energy.get("decayed_at")
             if decayed_at:
                 self._last_energy_decay = dt_util.parse_datetime(decayed_at)
+            # Persisted knobs win over the option-migration seed. Merge onto the
+            # current settings so a stored dict missing a newer field keeps its
+            # migrated default rather than raising.
+            saved = stored.get("settings")
+            if isinstance(saved, dict):
+                current = asdict(self.settings)
+                merged = {k: saved.get(k, v) for k, v in current.items()}
+                self.settings = ComEdSettings(**merged)
 
         entities = [
             e
@@ -313,6 +371,22 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
         await self._store.async_save(self._serialize_state())
         await super().async_shutdown()
 
+    async def async_update_setting(
+        self, field: str, value: object, *, recompute: bool = False
+    ) -> None:
+        """Apply a settings change from a control entity, persist, and republish.
+
+        `recompute` forces a same-day suggestion recompute for knobs that feed the
+        analytics suggestion (floor_pct/ceiling_pct/window_days); the decision is
+        then pushed immediately so entities reflect it without waiting for a tick.
+        """
+        setattr(self.settings, field, value)
+        if recompute:
+            self._last_suggest_day = None
+            self._maybe_recompute_suggestion(dt_util.utcnow())
+        await self._store.async_save(self._serialize_state())
+        self.async_set_updated_data(self._build_data())
+
     # --- main update ---------------------------------------------------------
 
     async def _async_update_data(self) -> ComEdData:
@@ -325,7 +399,8 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
             raise UpdateFailed(f"ComEd feed fetch failed: {err}") from err
 
         if points:
-            self._last_live_price = points[-1].price * 100.0
+            # The feed is newest-first, so the latest 5-minute point is points[0].
+            self._last_live_price = points[0].price * 100.0
             self._append_history(points)
 
         if hour_avg is not None:
@@ -352,20 +427,13 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
 
     def _build_data(self) -> ComEdData:
         """Assemble a ComEdData from current inputs and the latest prices."""
-        mode = self.config_entry.options.get(
-            CONF_THRESHOLD_MODE, DEFAULT_THRESHOLD_MODE
-        )
-        if mode == MODE_AUTO and self._suggestion.sample_size > 0:
+        mode = MODE_AUTO if self.settings.threshold_auto else MODE_MANUAL
+        if self.settings.threshold_auto and self._suggestion.sample_size > 0:
             floor = self._suggestion.price_floor
             ceiling = self._suggestion.price_ceiling
         else:
-            floor = self.config_entry.options.get(
-                CONF_PRICE_FLOOR, self._suggestion.price_floor or DEFAULT_PRICE_FLOOR
-            )
-            ceiling = self.config_entry.options.get(
-                CONF_PRICE_CEILING,
-                self._suggestion.price_ceiling or DEFAULT_PRICE_CEILING,
-            )
+            floor = self.settings.price_floor
+            ceiling = self.settings.price_ceiling
 
         current_soc = self._get_float(self.config_entry.data.get(CONF_CURRENT_SOC_ENTITY))
         target_soc = self._get_float(self.config_entry.data.get(CONF_TARGET_SOC_ENTITY))
@@ -381,10 +449,18 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
                 current_soc, target_soc, self._capacity_kwh(), efficiency
             )
 
+        # Decide against the running hourly average, not a single 5-minute point:
+        # the price paid is the settled hour-average, and the running average is
+        # the best live proxy for it.
+        decision_price = self._last_hourly_price
         decision: ChargeDecision | None = None
         forecast: dict[datetime, ForecastHour] = {}
         charge_cost: ChargeCost | None = None
-        if current_soc is not None and target_soc is not None and live is not None:
+        if (
+            current_soc is not None
+            and target_soc is not None
+            and decision_price is not None
+        ):
             plan = None
             now = dt_util.utcnow()
             departure = self._get_departure()
@@ -418,11 +494,11 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
                 dt_util.utcnow(),
                 current_soc,
                 target_soc,
-                live,
+                decision_price,
                 price_floor=floor,
                 price_ceiling=ceiling,
-                min_soc=self.config_entry.options.get(CONF_MIN_SOC, DEFAULT_MIN_SOC),
-                gamma=self.config_entry.options.get(CONF_GAMMA, DEFAULT_GAMMA),
+                min_soc=self.settings.min_soc,
+                gamma=self.settings.gamma,
                 plan=plan,
             )
 
@@ -444,12 +520,12 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
         )
 
     def _flat_rate(self) -> float | None:
-        """Flat ¢/kWh baseline for savings, or None when unset."""
-        return self.config_entry.options.get(CONF_FLAT_RATE)
+        """Flat ¢/kWh baseline for savings, or None when disabled (0)."""
+        return self.settings.flat_rate or None
 
     def _distribution_rate(self) -> float:
         """Fixed distribution ¢/kWh added to settled supply, 0 when unset."""
-        return self.config_entry.options.get(CONF_DISTRIBUTION_RATE) or 0.0
+        return self.settings.distribution_rate
 
     def _session_total_cost(self, session: Session | None) -> float | None:
         """Actual cost ($) of a settled session: supply + distribution."""
@@ -709,9 +785,10 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
         return [[ts.isoformat(), p] for ts, p in self._history]
 
     def _serialize_state(self) -> dict:
-        """Serialize history and energy totals to a JSON-storable form."""
+        """Serialize history, energy totals, and settings to JSON-storable form."""
         return {
             "history": self._serialize_history(),
+            "settings": asdict(self.settings),
             "energy": {
                 "vehicle": self._energy_vehicle_total,
                 "evse": self._energy_evse_total,
@@ -779,12 +856,8 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
         self._last_suggest_day = today
         self._suggestion = suggest_thresholds(
             (p for _, p in self._history),
-            floor_pct=self.config_entry.options.get(
-                CONF_FLOOR_PCT, DEFAULT_FLOOR_PCT
-            ),
-            ceiling_pct=self.config_entry.options.get(
-                CONF_CEILING_PCT, DEFAULT_CEILING_PCT
-            ),
+            floor_pct=self.settings.floor_pct,
+            ceiling_pct=self.settings.ceiling_pct,
             window_days=self._window_days,
         )
 
@@ -857,4 +930,4 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
 
     @property
     def _window_days(self) -> int:
-        return self.config_entry.options.get(CONF_WINDOW_DAYS, DEFAULT_WINDOW_DAYS)
+        return self.settings.window_days

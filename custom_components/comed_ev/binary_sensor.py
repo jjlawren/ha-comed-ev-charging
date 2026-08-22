@@ -52,7 +52,7 @@ class ChargeNowBinarySensor(ComEdEntity, BinarySensorEntity):
         d = data.decision
         attrs: dict[str, Any] = {
             "reason": d.reason,
-            "live_price": round(d.live_price, 2),
+            "decision_price": round(d.decision_price, 2),
             "threshold": round(d.threshold, 2),
         }
         if d.plan is not None:

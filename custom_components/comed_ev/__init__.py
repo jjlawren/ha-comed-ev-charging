@@ -8,7 +8,12 @@ from homeassistant.core import HomeAssistant
 from .coordinator import ComEdConfigEntry, ComEdCoordinator
 from .services import async_setup_services, async_unload_services
 
-PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR]
+PLATFORMS: list[Platform] = [
+    Platform.SENSOR,
+    Platform.BINARY_SENSOR,
+    Platform.NUMBER,
+    Platform.SWITCH,
+]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ComEdConfigEntry) -> bool:

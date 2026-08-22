@@ -92,10 +92,6 @@ def _has_departure(coordinator: ComEdCoordinator) -> bool:
     return coordinator._departure_entity is not None
 
 
-def _has_flat_rate(coordinator: ComEdCoordinator) -> bool:
-    return coordinator._flat_rate() is not None
-
-
 def _has_energy_meters(coordinator: ComEdCoordinator) -> bool:
     return (
         coordinator._energy_vehicle_entity is not None
@@ -213,7 +209,6 @@ SENSORS: tuple[ComEdSensorDescription, ...] = (
         translation_key="last_session_savings",
         native_unit_of_measurement=DOLLARS,
         suggested_display_precision=2,
-        available_fn=_has_flat_rate,
         value_fn=lambda d: d.last_session_savings,
     ),
 )

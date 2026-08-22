@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "ComEd EV Charging",
-        "description": "Charge your EV in the cheapest ComEd hours. The integration reads SOC/target/rate from your entities and publishes a charge_now signal; you wire the charger via your own automation.",
+        "description": "Charge your EV in the cheapest ComEd hours. The integration reads SOC/target/rate from your entities and publishes a charge_now signal; you wire the charger via your own automation. Tuning knobs (thresholds, mode, rates) are adjustable afterwards as entities.",
         "data": {
           "capacity_kwh": "Battery capacity (kWh, constant)",
           "capacity_entity": "Battery capacity entity (overrides constant)",
@@ -14,16 +14,7 @@
           "charge_rate_entity": "Charge rate entity (overrides constant)",
           "departure_entity": "Departure time entity (optional)",
           "energy_vehicle_entity": "Energy delivered to vehicle (kWh sensor, optional)",
-          "energy_evse_entity": "Energy drawn by charger (kWh sensor, optional)",
-          "threshold_mode": "Threshold mode"
-        }
-      },
-      "manual": {
-        "title": "Manual thresholds",
-        "description": "Pre-filled from the current ComEd price distribution. Adjust if you prefer.",
-        "data": {
-          "price_floor": "Price floor — always charge below (¢/kWh)",
-          "price_ceiling": "Price ceiling — realistic max near empty (¢/kWh)"
+          "energy_evse_entity": "Energy drawn by charger (kWh sensor, optional)"
         }
       }
     }
@@ -33,33 +24,15 @@
       "init": {
         "title": "ComEd EV Charging options",
         "data": {
-          "threshold_mode": "Threshold mode",
-          "price_floor": "Price floor (¢/kWh, Manual mode)",
-          "price_ceiling": "Price ceiling (¢/kWh, Manual mode)",
-          "min_soc": "Urgency-full SOC (%)",
-          "gamma": "Curve steepness (gamma)",
-          "floor_pct": "Floor percentile",
-          "ceiling_pct": "Ceiling percentile",
-          "window_days": "History window (days)",
-          "poll_interval": "Poll interval (minutes)",
-          "flat_rate": "Flat-rate baseline for savings (¢/kWh, optional)",
-          "distribution_rate": "Distribution charge added to actual cost (¢/kWh, optional)"
+          "poll_interval": "Poll interval (minutes)"
         }
-      }
-    }
-  },
-  "selector": {
-    "threshold_mode": {
-      "options": {
-        "auto": "Auto (track analytics suggestion)",
-        "manual": "Manual (pin values)"
       }
     }
   },
   "entity": {
     "sensor": {
-      "current_price": { "name": "Current price" },
-      "hourly_price": { "name": "Hourly price" },
+      "current_price": { "name": "5-minute spot price" },
+      "hourly_price": { "name": "Current hour average price" },
       "charge_threshold": { "name": "Charge threshold" },
       "suggested_floor": { "name": "Suggested floor" },
       "suggested_ceiling": { "name": "Suggested ceiling" },
@@ -73,6 +46,20 @@
     },
     "binary_sensor": {
       "charge_now": { "name": "Charge now" }
+    },
+    "switch": {
+      "threshold_auto": { "name": "Automatic thresholds" }
+    },
+    "number": {
+      "price_floor": { "name": "Price floor" },
+      "price_ceiling": { "name": "Price ceiling" },
+      "min_soc": { "name": "Urgency-full SOC" },
+      "gamma": { "name": "Curve steepness (gamma)" },
+      "floor_pct": { "name": "Floor percentile" },
+      "ceiling_pct": { "name": "Ceiling percentile" },
+      "window_days": { "name": "History window" },
+      "flat_rate": { "name": "Flat-rate baseline" },
+      "distribution_rate": { "name": "Distribution charge" }
     }
   },
   "services": {

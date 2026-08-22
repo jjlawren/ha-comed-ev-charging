@@ -30,10 +30,10 @@ when the battery is genuinely low.
 ### Auto vs. Manual thresholds
 
 The component observes the ComEd price distribution and **suggests** the floor/ceiling
-(25th / 90th percentile by default). In **Auto** mode (default) the thresholds track
-that rolling suggestion, so no tuning is required and they adapt as prices shift. In
-**Manual** mode you pin values — the setup form pre-fills them with the live suggestion
-so the starting point is still data-driven.
+(25th / 90th percentile by default). The **Automatic thresholds** switch (on by default)
+tracks that rolling suggestion, so no tuning is required and it adapts as prices shift.
+Turn the switch off to pin your own values with the **Price floor** / **Price ceiling**
+number entities.
 
 ## Entities
 
@@ -91,7 +91,9 @@ You are asked for:
   measured advance replaces the efficiency constant (it falls back to the constant
   until enough energy has accumulated). Older sessions decay at ~0.98/day
   (a ~34-day half-life) so the ratio tracks recent behavior and slow drift.
-- Threshold mode: Auto or Manual.
+
+Tuning knobs are not asked for at setup — they are live entities you adjust anytime
+(see **Controls** below).
 
 ## Example automation
 
@@ -112,12 +114,24 @@ automation:
             target: { entity_id: switch.ev_charger }
 ```
 
-## Options
+## Controls
 
-Reconfigurable from the integration's **Configure** button: threshold mode and Manual
-floor/ceiling, `min_soc` and `gamma` (curve steepness), analytics percentiles and
-history window, the poll interval, and the flat-rate and distribution ¢/kWh rates
-used for session-cost reporting.
+The tuning knobs are live entities under the device — adjust them from a dashboard,
+automation, or voice; changes apply immediately (no reload) and survive restarts:
+
+- **Automatic thresholds** (switch) — on tracks the analytics suggestion; off pins the
+  manual floor/ceiling below.
+- **Price floor** / **Price ceiling** (¢/kWh) — the pinned band used when the switch is
+  off.
+- **Urgency-full SOC** and **Curve steepness (gamma)** — shape the willingness-to-pay
+  curve `T(SOC)`.
+- **Floor percentile** / **Ceiling percentile** / **History window** — tune the analytics
+  suggestion (recomputed on change).
+- **Flat-rate baseline** (¢/kWh, 0 = disabled) and **Distribution charge** (¢/kWh) — used
+  for session-cost reporting.
+
+Only the **poll interval** remains under the integration's **Configure** button, since
+changing it needs a reload.
 
 ## History & analysis
 

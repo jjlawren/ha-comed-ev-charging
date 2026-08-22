@@ -58,6 +58,10 @@ DEFAULT_THRESHOLD_MODE = MODE_AUTO
 # Fallback ¢/kWh thresholds used until the analytics history has samples.
 DEFAULT_PRICE_FLOOR = 3.0
 DEFAULT_PRICE_CEILING = 14.0
+# Flat-rate baseline for savings; 0.0 disables the savings comparison.
+DEFAULT_FLAT_RATE = 0.0
+# Distribution ¢/kWh added to the settled supply rate; 0.0 = none.
+DEFAULT_DISTRIBUTION_RATE = 0.0
 
 # --- Storage -----------------------------------------------------------------
 STORAGE_VERSION = 1
