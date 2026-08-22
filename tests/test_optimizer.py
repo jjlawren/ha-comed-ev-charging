@@ -18,6 +18,7 @@ from custom_components.comed_ev.optimizer import (
     ForecastHour,
     build_forecast,
     charge_threshold,
+    cheapest_forecast_hour,
     energy_needed_kwh,
     estimate_charge_cost,
     plan_charge,
@@ -271,6 +272,28 @@ def test_cost_none_when_nothing_to_price():
     assert estimate_charge_cost({}, 10.0, 10.0) is None
     assert estimate_charge_cost(_forecast(5.0), 0.0, 10.0) is None
     assert estimate_charge_cost(_forecast(5.0), 10.0, 0.0) is None
+
+
+# --- cheapest_forecast_hour --------------------------------------------------
+
+
+def test_cheapest_forecast_hour_picks_lowest_price():
+    forecast = _forecast(20.0, 4.0, 30.0)
+    hour = cheapest_forecast_hour(forecast)
+    assert hour is not None
+    assert hour.price == pytest.approx(4.0)
+    assert hour.hour_ending == NOW + timedelta(hours=2)
+
+
+def test_cheapest_forecast_hour_earliest_wins_tie():
+    forecast = _forecast(5.0, 4.0, 4.0)
+    hour = cheapest_forecast_hour(forecast)
+    assert hour is not None
+    assert hour.hour_ending == NOW + timedelta(hours=2)
+
+
+def test_cheapest_forecast_hour_empty():
+    assert cheapest_forecast_hour({}) is None
 
 
 # --- hour_buckets (settled-cost attribution) --------------------------------

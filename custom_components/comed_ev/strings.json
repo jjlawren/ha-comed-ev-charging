@@ -40,6 +40,8 @@
       "energy_needed": { "name": "Energy needed to target" },
       "estimated_charge_cost": { "name": "Estimated charge cost" },
       "charge_avg_price": { "name": "Estimated charge average price" },
+      "cheapest_price": { "name": "Cheapest upcoming price" },
+      "cheapest_price_time": { "name": "Cheapest upcoming price time" },
       "measured_efficiency": { "name": "Measured efficiency" },
       "last_session_cost": { "name": "Last session cost" },
       "last_session_savings": { "name": "Last session savings" }

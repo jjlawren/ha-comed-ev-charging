@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -18,6 +19,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .coordinator import ComEdConfigEntry, ComEdCoordinator, ComEdData
 from .entity import ComEdEntity
+from .optimizer import cheapest_forecast_hour
 
 CENTS = "¢/kWh"
 DOLLARS = "$"
@@ -28,7 +30,7 @@ DOLLARS_PER_KWH = "$/kWh"
 class ComEdSensorDescription(SensorEntityDescription):
     """Describes a ComEd sensor with a value extractor and attribute builder."""
 
-    value_fn: Callable[[ComEdData], float | None]
+    value_fn: Callable[[ComEdData], float | datetime | None]
     attrs_fn: Callable[[ComEdData], Mapping[str, Any]] | None = None
     # Present the entity only when this predicate holds for the coordinator.
     available_fn: Callable[[ComEdCoordinator], bool] = lambda _c: True
@@ -59,6 +61,16 @@ def _end_soc_attrs(data: ComEdData) -> Mapping[str, Any]:
         "energy_needed_kwh": round(plan.energy_needed_kwh, 2),
         "feasible": plan.feasible,
         "forecast_source": plan.forecast_source,
+    }
+
+
+def _cheapest_hour_attrs(data: ComEdData) -> Mapping[str, Any]:
+    hour = cheapest_forecast_hour(data.forecast)
+    if hour is None:
+        return {}
+    return {
+        "hour_ending": hour.hour_ending.isoformat(),
+        "source": hour.source,
     }
 
 
@@ -196,6 +208,25 @@ SENSORS: tuple[ComEdSensorDescription, ...] = (
         value_fn=lambda d: d.charge_cost.average_price if d.charge_cost else None,
     ),
     ComEdSensorDescription(
+        key="cheapest_price",
+        translation_key="cheapest_price",
+        native_unit_of_measurement=CENTS,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+        value_fn=lambda d: (
+            hour.price if (hour := cheapest_forecast_hour(d.forecast)) else None
+        ),
+        attrs_fn=_cheapest_hour_attrs,
+    ),
+    ComEdSensorDescription(
+        key="cheapest_price_time",
+        translation_key="cheapest_price_time",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        value_fn=lambda d: (
+            hour.hour_ending if (hour := cheapest_forecast_hour(d.forecast)) else None
+        ),
+    ),
+    ComEdSensorDescription(
         key="measured_efficiency",
         translation_key="measured_efficiency",
         entity_category=EntityCategory.DIAGNOSTIC,
@@ -249,7 +280,7 @@ class ComEdSensor(ComEdEntity, SensorEntity):
         self.entity_description = description
 
     @property
-    def native_value(self) -> float | None:
+    def native_value(self) -> float | datetime | None:
         """Return the current sensor value."""
         if self.coordinator.data is None:
             return None

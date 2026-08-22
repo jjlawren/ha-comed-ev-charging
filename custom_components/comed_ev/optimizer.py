@@ -125,6 +125,19 @@ def estimate_charge_cost(
     )
 
 
+def cheapest_forecast_hour(
+    forecast: dict[datetime, ForecastHour],
+) -> ForecastHour | None:
+    """Return the lowest-priced forecast hour, earliest wins on a tie.
+
+    None when the forecast is empty. Used to surface the cheapest upcoming
+    estimated rate and when it occurs.
+    """
+    if not forecast:
+        return None
+    return min(forecast.values(), key=lambda h: (h.price, h.hour_ending))
+
+
 def hour_buckets(started: datetime, ended: datetime) -> dict[datetime, float]:
     """Split [started, ended) into hour-ending buckets by time fraction.
 
