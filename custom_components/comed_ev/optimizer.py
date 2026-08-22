@@ -75,33 +75,40 @@ def estimate_charge_cost(
     forecast: dict[datetime, ForecastHour],
     energy_needed_kwh: float,
     charge_rate_kw: float,
+    distribution_rate: float = 0.0,
 ) -> ChargeCost | None:
     """Estimate charge cost by filling energy from the cheapest forecast hours.
 
     Picks the lowest-priced hours in the window and draws `charge_rate_kw` kWh
     from each (a partial final hour) until `energy_needed_kwh` is met or the
-    window runs out. Forecast prices are ¢/kWh; the returned cost is in dollars.
-    Returns None when there is nothing to price.
+    window runs out. Forecast prices and `distribution_rate` are ¢/kWh; the
+    fixed distribution rate is added to every priced kWh, matching the settled
+    session cost. The returned costs are in dollars. Returns None when there is
+    nothing to price.
     """
     if energy_needed_kwh <= 0 or charge_rate_kw <= 0 or not forecast:
         return None
     remaining = energy_needed_kwh
-    cost_cents = 0.0
+    supply_cents = 0.0
     hours_used = 0
     for hour in sorted(forecast.values(), key=lambda h: h.price):
         if remaining <= 0:
             break
         kwh = min(charge_rate_kw, remaining)
-        cost_cents += kwh * hour.price
+        supply_cents += kwh * hour.price
         remaining -= kwh
         hours_used += 1
     energy = energy_needed_kwh - remaining
     if energy <= 0:
         return None
-    cost = cost_cents / 100.0
+    supply_cost = supply_cents / 100.0
+    distribution_cost = distribution_rate * energy / 100.0
+    cost = supply_cost + distribution_cost
     return ChargeCost(
         energy_kwh=energy,
         estimated_cost=cost,
+        supply_cost=supply_cost,
+        distribution_cost=distribution_cost,
         average_price=cost / energy,
         hours_used=hours_used,
     )
@@ -149,11 +156,14 @@ class ChargeCost:
 
     `energy_kwh` is the wall energy actually priced; it is below the energy
     needed only when the forecast window is too short to deliver all of it.
-    `estimated_cost` is in dollars; `average_price` is dollars per kWh.
+    `estimated_cost` is the total in dollars (`supply_cost` +
+    `distribution_cost`); `average_price` is dollars per kWh.
     """
 
     energy_kwh: float
     estimated_cost: float
+    supply_cost: float
+    distribution_cost: float
     average_price: float
     hours_used: int
 

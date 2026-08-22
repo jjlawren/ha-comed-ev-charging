@@ -67,6 +67,8 @@ def _charge_cost_attrs(data: ComEdData) -> Mapping[str, Any]:
     return {
         "energy_kwh": round(cost.energy_kwh, 2),
         "average_price": round(cost.average_price, 4),
+        "supply_cost": round(cost.supply_cost, 2),
+        "distribution_cost": round(cost.distribution_cost, 2),
         "hours_used": cost.hours_used,
     }
 

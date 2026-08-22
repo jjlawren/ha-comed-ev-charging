@@ -488,7 +488,10 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
                 )
             if energy_needed:
                 charge_cost = estimate_charge_cost(
-                    forecast, energy_needed, self._charge_rate()
+                    forecast,
+                    energy_needed,
+                    self._charge_rate(),
+                    self._distribution_rate(),
                 )
             decision = should_charge_now(
                 dt_util.utcnow(),

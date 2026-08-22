@@ -244,6 +244,19 @@ def test_cost_spans_hours_with_partial_final():
     assert cost.average_price == pytest.approx(0.70 / 15.0)
 
 
+def test_cost_includes_distribution_rate():
+    # 10 kWh at 4¢ supply + 5¢ distribution -> 90¢ total, split out.
+    forecast = _forecast(20.0, 4.0, 30.0)
+    cost = estimate_charge_cost(
+        forecast, energy_needed_kwh=10.0, charge_rate_kw=10.0, distribution_rate=5.0
+    )
+    assert cost is not None
+    assert cost.supply_cost == pytest.approx(0.40)
+    assert cost.distribution_cost == pytest.approx(0.50)  # 10 kWh * 5¢
+    assert cost.estimated_cost == pytest.approx(0.90)
+    assert cost.average_price == pytest.approx(0.09)
+
+
 def test_cost_capped_by_short_window():
     # Only two hours available -> 20 kWh priced though 30 kWh is needed.
     forecast = _forecast(5.0, 7.0)
