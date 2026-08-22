@@ -1,0 +1,51 @@
+# ComEd EV Charging — automated charging automation
+#
+# The integration never commands your charger. It publishes
+# `binary_sensor.comed_ev_charge_now` and you drive the charger from it.
+#
+# Replace `switch.ev_charger` with your charger's switch entity. If your
+# charger uses a different service (e.g. a Tesla/Wallbox charge start/stop
+# button, or a number for amps), swap the service calls in the two branches.
+#
+# Paste this under `automation:` in configuration.yaml, or import it via the
+# UI: Settings -> Automations -> ⋮ -> Edit in YAML.
+
+- alias: "EV: follow ComEd cheap-charge signal"
+  id: comed_ev_follow_charge_now
+  description: >-
+    Turns the charger on when the integration recommends charging and off
+    otherwise. Syncs on Home Assistant start so the charger matches the
+    current signal after a restart.
+  mode: single
+  trigger:
+    # React to every change of the signal.
+    - platform: state
+      entity_id: binary_sensor.comed_ev_charge_now
+      id: signal
+    # Re-sync after a restart so the charger matches the current signal.
+    - platform: homeassistant
+      event: start
+      id: startup
+  # Ignore unknown/unavailable states (e.g. before the first poll).
+  condition:
+    - condition: not
+      conditions:
+        - condition: state
+          entity_id: binary_sensor.comed_ev_charge_now
+          state:
+            - unknown
+            - unavailable
+  action:
+    - choose:
+        - conditions:
+            - condition: state
+              entity_id: binary_sensor.comed_ev_charge_now
+              state: "on"
+          sequence:
+            - service: switch.turn_on
+              target:
+                entity_id: switch.ev_charger
+      default:
+        - service: switch.turn_off
+          target:
+            entity_id: switch.ev_charger
