@@ -687,3 +687,39 @@ async def test_distribution_rate_added_to_cost(
     # Savings unchanged: baseline 10¢ vs settled supply 4¢ = $1.20.
     savings = hass.states.get("sensor.comed_ev_charging_last_session_savings")
     assert float(savings.state) == pytest.approx(1.20)
+
+
+async def test_past_departure_treated_as_unset(
+    hass: HomeAssistant, mock_client
+) -> None:
+    """A departure time in the past is ignored (input_datetime cannot clear)."""
+    from datetime import timedelta
+
+    from homeassistant.util import dt as dt_util
+
+    from custom_components.comed_ev.const import CONF_DEPARTURE_ENTITY
+
+    coordinator = await _build_coordinator(
+        hass, extra_data={CONF_DEPARTURE_ENTITY: "input_datetime.ev_departure"}
+    )
+    now = dt_util.utcnow()
+
+    # A future departure is used.
+    future = now + timedelta(hours=6)
+    hass.states.async_set(
+        "input_datetime.ev_departure",
+        future.isoformat(),
+        {"timestamp": future.timestamp()},
+    )
+    got = coordinator._get_departure()
+    assert got is not None
+    assert abs(got - future) < timedelta(seconds=1)
+
+    # A past departure falls back to None (the overnight window).
+    past = now - timedelta(hours=1)
+    hass.states.async_set(
+        "input_datetime.ev_departure",
+        past.isoformat(),
+        {"timestamp": past.timestamp()},
+    )
+    assert coordinator._get_departure() is None

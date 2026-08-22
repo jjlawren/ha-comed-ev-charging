@@ -913,9 +913,15 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
         # input_datetime exposes a `timestamp` attribute; schedules vary.
         timestamp = state.attributes.get("timestamp")
         if timestamp is not None:
-            return dt_util.utc_from_timestamp(float(timestamp))
-        parsed = dt_util.parse_datetime(state.state)
-        return dt_util.as_utc(parsed) if parsed else None
+            departure = dt_util.utc_from_timestamp(float(timestamp))
+        else:
+            parsed = dt_util.parse_datetime(state.state)
+            departure = dt_util.as_utc(parsed) if parsed else None
+        # input_datetime cannot be cleared, so a past time means "no deadline":
+        # fall back to the overnight window instead of a stale departure.
+        if departure is None or departure <= dt_util.utcnow():
+            return None
+        return departure
 
     # --- convenience ---------------------------------------------------------
 

@@ -86,6 +86,10 @@ You are asked for:
 - **Current-SOC** entity (required) and **Target-SOC** entity (required).
 - Charge rate — a constant kW or an entity.
 - **Departure** entity (optional): `input_datetime`, `schedule`, or a datetime `sensor`.
+  A departure **in the past counts as unset** — the integration reverts to the
+  no-departure overnight window. Because an `input_datetime` cannot be cleared,
+  this is how you turn a deadline off: set it to any past time. A time-only
+  `input_datetime` (`has_date: false`) self-clears each day once its time passes.
 - **Energy meters** (optional): cumulative kWh sensors for energy delivered to the
   vehicle and energy drawn by the charger. When both are set, the ratio of their
   measured advance replaces the efficiency constant (it falls back to the constant
