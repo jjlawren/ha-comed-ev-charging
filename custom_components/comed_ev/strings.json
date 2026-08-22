@@ -16,7 +16,26 @@
           "energy_vehicle_entity": "Energy delivered to vehicle (kWh sensor, optional)",
           "energy_evse_entity": "Energy drawn by charger (kWh sensor, optional)"
         }
+      },
+      "reconfigure": {
+        "title": "ComEd EV Charging",
+        "description": "Update the wired entities and battery settings. Tuning knobs (thresholds, mode, rates) are adjustable separately as entities.",
+        "data": {
+          "capacity_kwh": "Battery capacity (kWh, constant)",
+          "capacity_entity": "Battery capacity entity (overrides constant)",
+          "efficiency": "Charging efficiency (0-1)",
+          "current_soc_entity": "Current state-of-charge entity",
+          "target_soc_entity": "Target state-of-charge entity",
+          "charge_rate_kw": "Charge rate (kW, constant)",
+          "charge_rate_entity": "Charge rate entity (overrides constant)",
+          "departure_entity": "Departure time entity (optional)",
+          "energy_vehicle_entity": "Energy delivered to vehicle (kWh sensor, optional)",
+          "energy_evse_entity": "Energy drawn by charger (kWh sensor, optional)"
+        }
       }
+    },
+    "abort": {
+      "reconfigure_successful": "Reconfiguration saved."
     }
   },
   "options": {

@@ -60,3 +60,28 @@ async def test_options_flow_sets_poll_interval(
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"][CONF_POLL_INTERVAL] == 10
+
+
+async def test_reconfigure_updates_entities(
+    hass: HomeAssistant, mock_client
+) -> None:
+    """Reconfigure re-shows the setup form and updates entry data in place."""
+    entry = MockConfigEntry(domain=DOMAIN, data=BASE_INPUT, options={})
+    entry.add_to_hass(hass)
+
+    result = await entry.start_reconfigure_flow(hass)
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "reconfigure"
+
+    new_input = {
+        **BASE_INPUT,
+        CONF_CURRENT_SOC_ENTITY: "sensor.new_soc",
+        CONF_TARGET_SOC_ENTITY: "number.new_target",
+    }
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], new_input
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.data[CONF_CURRENT_SOC_ENTITY] == "sensor.new_soc"
+    assert entry.data[CONF_TARGET_SOC_ENTITY] == "number.new_target"
