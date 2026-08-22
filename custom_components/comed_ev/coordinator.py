@@ -22,6 +22,7 @@ from .const import (
     BACKFILL_CHUNK_DAYS,
     BACKFILL_COVERAGE_SKIP,
     BACKFILL_PAUSE_SECONDS,
+    CONF_CAPACITY_ENTITY,
     CONF_CAPACITY_KWH,
     CONF_CEILING_PCT,
     CONF_CHARGE_RATE_ENTITY,
@@ -29,6 +30,8 @@ from .const import (
     CONF_CURRENT_SOC_ENTITY,
     CONF_DEPARTURE_ENTITY,
     CONF_EFFICIENCY,
+    CONF_ENERGY_EVSE_ENTITY,
+    CONF_ENERGY_VEHICLE_ENTITY,
     CONF_FLOOR_PCT,
     CONF_GAMMA,
     CONF_MIN_SOC,
@@ -48,16 +51,24 @@ from .const import (
     DEFAULT_PRICE_FLOOR,
     DEFAULT_THRESHOLD_MODE,
     DEFAULT_WINDOW_DAYS,
+    EFFICIENCY_MAX,
+    EFFICIENCY_MIN,
+    EFFICIENCY_MIN_SAMPLE_KWH,
+    ENERGY_DECAY_PER_DAY,
     HOURLY_FEED_INTERVAL,
     MODE_AUTO,
     NEXT_DAY_PUBLISH_HOUR,
+    OVERNIGHT_END_HOUR,
     STORAGE_KEY,
     STORAGE_VERSION,
 )
 from .optimizer import (
+    ChargeCost,
     ChargeDecision,
     ForecastHour,
     build_forecast,
+    energy_needed_kwh,
+    estimate_charge_cost,
     plan_charge,
     should_charge_now,
 )
@@ -78,6 +89,12 @@ class ComEdData:
     effective_floor: float
     effective_ceiling: float
     mode: str
+    # Measured charge efficiency (vehicle/wall), None until enough samples.
+    measured_efficiency: float | None = None
+    # Wall kWh needed to reach the target SOC, None until SOC inputs are known.
+    energy_needed_kwh: float | None = None
+    # Estimated cost of the upcoming charge, None until a forecast is available.
+    charge_cost: ChargeCost | None = None
     forecast: dict[datetime, ForecastHour] = field(default_factory=dict)
 
 
@@ -97,9 +114,15 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
             update_interval=timedelta(minutes=interval),
         )
         self._client = Client(session=async_get_clientsession(hass))
-        self._store: Store[list[list]] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+        self._store: Store[dict] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         # (timestamp, price_cents) rolling history, oldest first.
         self._history: list[tuple[datetime, float]] = []
+        # Lifetime kWh summed from the two energy meters, and their last reads.
+        self._energy_vehicle_total = 0.0
+        self._energy_evse_total = 0.0
+        self._last_energy: dict[str, float] = {}
+        # When the decay was last applied to the totals above.
+        self._last_energy_decay: datetime | None = None
         self._suggestion = ThresholdSuggestion(
             DEFAULT_PRICE_FLOOR, DEFAULT_PRICE_CEILING, 0, self._window_days
         )
@@ -116,12 +139,21 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
     async def async_setup(self) -> None:
         """Load persisted history and subscribe to input-entity changes."""
         stored = await self._store.async_load()
-        if stored:
-            for ts_iso, price in stored:
+        # Legacy stores held the bare history list; newer ones wrap it in a dict.
+        history_raw = stored.get("history") if isinstance(stored, dict) else stored
+        if history_raw:
+            for ts_iso, price in history_raw:
                 parsed = dt_util.parse_datetime(ts_iso)
                 if parsed is not None:
                     self._history.append((parsed, float(price)))
             self._prune_history()
+        if isinstance(stored, dict):
+            energy = stored.get("energy") or {}
+            self._energy_vehicle_total = float(energy.get("vehicle", 0.0))
+            self._energy_evse_total = float(energy.get("evse", 0.0))
+            decayed_at = energy.get("decayed_at")
+            if decayed_at:
+                self._last_energy_decay = dt_util.parse_datetime(decayed_at)
 
         entities = [
             e
@@ -129,6 +161,7 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
                 self.config_entry.data.get(CONF_CURRENT_SOC_ENTITY),
                 self.config_entry.data.get(CONF_TARGET_SOC_ENTITY),
                 self.config_entry.data.get(CONF_CHARGE_RATE_ENTITY),
+                self.config_entry.data.get(CONF_CAPACITY_ENTITY),
                 self.config_entry.data.get(CONF_DEPARTURE_ENTITY),
             )
             if e
@@ -137,6 +170,24 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
             self._unsub_state.append(
                 async_track_state_change_event(
                     self.hass, entities, self._handle_input_change
+                )
+            )
+
+        energy_entities = [
+            e
+            for e in (self._energy_vehicle_entity, self._energy_evse_entity)
+            if e
+        ]
+        if energy_entities:
+            # Seed last-seen reads so the first change counts a real advance,
+            # not the meter's whole pre-existing total.
+            for e in energy_entities:
+                value = self._get_float(e)
+                if value is not None:
+                    self._last_energy[e] = value
+            self._unsub_state.append(
+                async_track_state_change_event(
+                    self.hass, energy_entities, self._handle_energy_change
                 )
             )
 
@@ -175,7 +226,7 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
         self._merge_history(collected)
         self._last_suggest_day = None  # force a recompute over the seeded window
         self._maybe_recompute_suggestion(dt_util.utcnow())
-        await self._store.async_save(self._serialize_history())
+        await self._store.async_save(self._serialize_state())
         self.async_set_updated_data(self._build_data())
         _LOGGER.debug("ComEd backfill added %d points", len(collected))
 
@@ -184,12 +235,18 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
         """Recompute immediately when an input entity changes."""
         self.async_set_updated_data(self._build_data())
 
+    @callback
+    def _handle_energy_change(self, _event: Event) -> None:
+        """Accumulate meter advance and recompute measured efficiency."""
+        self._accumulate_energy()
+        self.async_set_updated_data(self._build_data())
+
     async def async_shutdown(self) -> None:
         """Unsubscribe listeners and flush history on unload."""
         for unsub in self._unsub_state:
             unsub()
         self._unsub_state.clear()
-        await self._store.async_save(self._serialize_history())
+        await self._store.async_save(self._serialize_state())
         await super().async_shutdown()
 
     # --- main update ---------------------------------------------------------
@@ -210,12 +267,14 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
         if hour_avg is not None:
             self._last_hourly_price = hour_avg.price * 100.0
 
-        if self._departure_entity and self._needs_hourly_fetch(now):
+        # Hourly estimate feeds drive the cost forecast, which is available with
+        # or without a departure (overnight window), so refresh unconditionally.
+        if self._needs_hourly_fetch(now):
             await self._refresh_hourly_feeds()
             self._last_hourly_fetch = now
 
         self._maybe_recompute_suggestion(now)
-        await self._store.async_save(self._serialize_history())
+        await self._store.async_save(self._serialize_state())
 
         return self._build_data()
 
@@ -239,30 +298,49 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
         current_soc = self._get_float(self.config_entry.data.get(CONF_CURRENT_SOC_ENTITY))
         target_soc = self._get_float(self.config_entry.data.get(CONF_TARGET_SOC_ENTITY))
         live = self._last_live_price
+        measured_efficiency = self._measured_efficiency()
+        efficiency = measured_efficiency
+        if efficiency is None:
+            efficiency = self.config_entry.data.get(CONF_EFFICIENCY, DEFAULT_EFFICIENCY)
+
+        energy_needed: float | None = None
+        if current_soc is not None and target_soc is not None:
+            energy_needed = energy_needed_kwh(
+                current_soc, target_soc, self._capacity_kwh(), efficiency
+            )
 
         decision: ChargeDecision | None = None
         forecast: dict[datetime, ForecastHour] = {}
+        charge_cost: ChargeCost | None = None
         if current_soc is not None and target_soc is not None and live is not None:
             plan = None
+            now = dt_util.utcnow()
             departure = self._get_departure()
-            if departure is not None:
-                now = dt_util.utcnow()
+            # Cost is priced over the deadline window, or an overnight window
+            # when no departure is set; the plan is deadline-only.
+            window_end = departure if departure is not None else self._overnight_end(now)
+            if window_end is not None and window_end > now:
                 forecast = build_forecast(
                     now,
-                    departure,
+                    window_end,
                     self._day_ahead,
                     self._dual_today,
                     self._suggestion.price_ceiling or None,
                 )
+            if departure is not None:
                 plan = plan_charge(
                     now,
                     departure,
                     current_soc,
                     target_soc,
-                    self.config_entry.data[CONF_CAPACITY_KWH],
+                    self._capacity_kwh(),
                     self._charge_rate(),
-                    self.config_entry.data.get(CONF_EFFICIENCY, DEFAULT_EFFICIENCY),
+                    efficiency,
                     forecast,
+                )
+            if energy_needed:
+                charge_cost = estimate_charge_cost(
+                    forecast, energy_needed, self._charge_rate()
                 )
             decision = should_charge_now(
                 dt_util.utcnow(),
@@ -284,8 +362,21 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
             effective_floor=floor,
             effective_ceiling=ceiling,
             mode=mode,
+            measured_efficiency=measured_efficiency,
+            energy_needed_kwh=energy_needed,
+            charge_cost=charge_cost,
             forecast=forecast,
         )
+
+    def _overnight_end(self, now: datetime) -> datetime:
+        """Return the next OVERNIGHT_END_HOUR (Central) as a UTC datetime."""
+        central = now.astimezone(CENTRAL)
+        end = central.replace(
+            hour=OVERNIGHT_END_HOUR, minute=0, second=0, microsecond=0
+        )
+        if central >= end:
+            end += timedelta(days=1)
+        return dt_util.as_utc(end)
 
     # --- feeds & history -----------------------------------------------------
 
@@ -327,6 +418,65 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
     def _serialize_history(self) -> list[list]:
         """Serialize history to a JSON-storable form."""
         return [[ts.isoformat(), p] for ts, p in self._history]
+
+    def _serialize_state(self) -> dict:
+        """Serialize history and energy totals to a JSON-storable form."""
+        return {
+            "history": self._serialize_history(),
+            "energy": {
+                "vehicle": self._energy_vehicle_total,
+                "evse": self._energy_evse_total,
+                "decayed_at": (
+                    self._last_energy_decay.isoformat()
+                    if self._last_energy_decay is not None
+                    else None
+                ),
+            },
+        }
+
+    # --- measured efficiency -------------------------------------------------
+
+    def _accumulate_energy(self) -> None:
+        """Decay the running totals, then add each meter's positive advance."""
+        self._decay_energy(dt_util.utcnow())
+        self._energy_vehicle_total += self._meter_delta(self._energy_vehicle_entity)
+        self._energy_evse_total += self._meter_delta(self._energy_evse_entity)
+
+    def _decay_energy(self, now: datetime) -> None:
+        """Shrink both totals for the time elapsed so new deltas weigh more.
+
+        Uniform decay cancels in the ratio; it matters only because it runs on
+        the accumulated totals just before a fresh delta is added at full weight.
+        """
+        if self._last_energy_decay is not None:
+            days = (now - self._last_energy_decay).total_seconds() / 86400.0
+            if days > 0:
+                factor = ENERGY_DECAY_PER_DAY**days
+                self._energy_vehicle_total *= factor
+                self._energy_evse_total *= factor
+        self._last_energy_decay = now
+
+    def _meter_delta(self, entity_id: str | None) -> float:
+        """Positive kWh advance since last read; 0 on first read or a reset."""
+        if not entity_id:
+            return 0.0
+        value = self._get_float(entity_id)
+        if value is None:
+            return 0.0
+        last = self._last_energy.get(entity_id)
+        self._last_energy[entity_id] = value
+        if last is None or value < last:  # first read, or the meter reset
+            return 0.0
+        return value - last
+
+    def _measured_efficiency(self) -> float | None:
+        """Vehicle/wall energy ratio, or None until it is trustworthy."""
+        if self._energy_evse_total < EFFICIENCY_MIN_SAMPLE_KWH:
+            return None
+        ratio = self._energy_vehicle_total / self._energy_evse_total
+        if not EFFICIENCY_MIN <= ratio <= EFFICIENCY_MAX:
+            return None
+        return ratio
 
     def _maybe_recompute_suggestion(self, now: datetime) -> None:
         """Recompute threshold suggestions once per calendar day."""
@@ -374,6 +524,15 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
                 return value
         return self.config_entry.data.get(CONF_CHARGE_RATE_KW, 0.0)
 
+    def _capacity_kwh(self) -> float:
+        """Return the battery capacity in kWh from the entity, else the constant."""
+        entity = self.config_entry.data.get(CONF_CAPACITY_ENTITY)
+        if entity:
+            value = self._get_float(entity)
+            if value is not None:
+                return value
+        return self.config_entry.data.get(CONF_CAPACITY_KWH, 0.0)
+
     def _get_departure(self) -> datetime | None:
         """Parse the optional departure entity into a UTC datetime."""
         entity = self._departure_entity
@@ -394,6 +553,14 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
     @property
     def _departure_entity(self) -> str | None:
         return self.config_entry.data.get(CONF_DEPARTURE_ENTITY)
+
+    @property
+    def _energy_vehicle_entity(self) -> str | None:
+        return self.config_entry.data.get(CONF_ENERGY_VEHICLE_ENTITY)
+
+    @property
+    def _energy_evse_entity(self) -> str | None:
+        return self.config_entry.data.get(CONF_ENERGY_EVSE_ENTITY)
 
     @property
     def _window_days(self) -> int:

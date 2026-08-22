@@ -6,12 +6,15 @@ DOMAIN = "comed_ev"
 
 # --- Config / options keys ---------------------------------------------------
 CONF_CAPACITY_KWH = "capacity_kwh"
+CONF_CAPACITY_ENTITY = "capacity_entity"
 CONF_EFFICIENCY = "efficiency"
 CONF_CURRENT_SOC_ENTITY = "current_soc_entity"
 CONF_TARGET_SOC_ENTITY = "target_soc_entity"
 CONF_CHARGE_RATE_ENTITY = "charge_rate_entity"
 CONF_CHARGE_RATE_KW = "charge_rate_kw"
 CONF_DEPARTURE_ENTITY = "departure_entity"
+CONF_ENERGY_VEHICLE_ENTITY = "energy_vehicle_entity"
+CONF_ENERGY_EVSE_ENTITY = "energy_evse_entity"
 
 CONF_THRESHOLD_MODE = "threshold_mode"
 CONF_PRICE_FLOOR = "price_floor"
@@ -27,6 +30,16 @@ CONF_POLL_INTERVAL = "poll_interval"
 # --- Threshold modes ---------------------------------------------------------
 MODE_AUTO = "auto"
 MODE_MANUAL = "manual"
+
+# --- Measured efficiency -----------------------------------------------------
+# Reject a measured vehicle/wall ratio outside this range as a bad sensor.
+EFFICIENCY_MIN = 0.5
+EFFICIENCY_MAX = 1.0
+# Wall energy (kWh) that must accumulate before the measured ratio is trusted.
+EFFICIENCY_MIN_SAMPLE_KWH = 2.0
+# Per-day multiplier applied to both totals so recent sessions weigh more.
+# 0.98/day is a ~34-day half-life; the ratio still tracks slow drift.
+ENERGY_DECAY_PER_DAY = 0.98
 
 # --- Defaults ----------------------------------------------------------------
 DEFAULT_EFFICIENCY = 0.9
@@ -50,6 +63,9 @@ STORAGE_KEY = "comed_ev.history"
 HOURLY_FEED_INTERVAL = 3600
 # Central-local hour after which we refresh the next-day feed to catch publish.
 NEXT_DAY_PUBLISH_HOUR = 16
+# Central-local hour marking the end of the "overnight" cost window used to
+# estimate a charge when no departure time is configured.
+OVERNIGHT_END_HOUR = 6
 
 # Setup backfill: seed the rolling window from the 5-minute API in chunks.
 BACKFILL_CHUNK_DAYS = 7

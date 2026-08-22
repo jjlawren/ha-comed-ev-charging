@@ -44,7 +44,11 @@ so the starting point is still data-driven.
 | `sensor.comed_ev_hourly_price` | Current-hour average price. |
 | `sensor.comed_ev_charge_threshold` | Current `T(SOC)`; attributes: floor/ceiling, mode. |
 | `sensor.comed_ev_projected_end_soc` | Deadline mode only: projected SOC at departure. |
+| `sensor.comed_ev_energy_needed_to_target` | Wall energy (kWh) to reach target SOC (target−current, divided by efficiency). |
+| `sensor.comed_ev_estimated_charge_cost` | Estimated cost ($) of the upcoming charge, priced over the cheapest forecast hours. Window is now→departure (deadline mode) or now→next 6 AM Central otherwise. Attributes: `energy_kwh`, `average_price`, `hours_used`. |
+| `sensor.comed_ev_estimated_charge_average_price` | Estimated average $/kWh for that charge. |
 | `sensor.comed_ev_suggested_floor` / `_ceiling` | Analytics recommendations (disabled by default). |
+| `sensor.comed_ev_measured_efficiency` | Measured vehicle/wall ratio when energy meters are set (diagnostic). |
 
 `reason` is one of `below_threshold`, `above_threshold`, `target_reached`, `must_charge`.
 
@@ -62,10 +66,15 @@ restart Home Assistant.
 ## Setup
 
 You are asked for:
-- Battery capacity (kWh) and charging efficiency.
+- Battery capacity — a constant kWh or an entity — and charging efficiency.
 - **Current-SOC** entity (required) and **Target-SOC** entity (required).
 - Charge rate — a constant kW or an entity.
 - **Departure** entity (optional): `input_datetime`, `schedule`, or a datetime `sensor`.
+- **Energy meters** (optional): cumulative kWh sensors for energy delivered to the
+  vehicle and energy drawn by the charger. When both are set, the ratio of their
+  measured advance replaces the efficiency constant (it falls back to the constant
+  until enough energy has accumulated). Older sessions decay at ~0.98/day
+  (a ~34-day half-life) so the ratio tracks recent behavior and slow drift.
 - Threshold mode: Auto or Manual.
 
 ## Example automation

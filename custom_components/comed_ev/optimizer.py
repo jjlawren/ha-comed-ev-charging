@@ -55,6 +55,57 @@ def charge_threshold(
     return price_floor + (price_ceiling - price_floor) * urgency**gamma
 
 
+def energy_needed_kwh(
+    current_soc: float,
+    target_soc: float,
+    capacity_kwh: float,
+    efficiency: float,
+) -> float:
+    """Wall energy (kWh) needed to raise SOC from current to target.
+
+    Divides the energy into the battery by charging efficiency, so the result is
+    what the meter reads. Returns 0.0 once the target is reached.
+    """
+    to_battery = max(0.0, (target_soc - current_soc) / 100.0 * capacity_kwh)
+    return to_battery / efficiency if efficiency > 0 else 0.0
+
+
+def estimate_charge_cost(
+    forecast: dict[datetime, ForecastHour],
+    energy_needed_kwh: float,
+    charge_rate_kw: float,
+) -> ChargeCost | None:
+    """Estimate charge cost by filling energy from the cheapest forecast hours.
+
+    Picks the lowest-priced hours in the window and draws `charge_rate_kw` kWh
+    from each (a partial final hour) until `energy_needed_kwh` is met or the
+    window runs out. Forecast prices are ¢/kWh; the returned cost is in dollars.
+    Returns None when there is nothing to price.
+    """
+    if energy_needed_kwh <= 0 or charge_rate_kw <= 0 or not forecast:
+        return None
+    remaining = energy_needed_kwh
+    cost_cents = 0.0
+    hours_used = 0
+    for hour in sorted(forecast.values(), key=lambda h: h.price):
+        if remaining <= 0:
+            break
+        kwh = min(charge_rate_kw, remaining)
+        cost_cents += kwh * hour.price
+        remaining -= kwh
+        hours_used += 1
+    energy = energy_needed_kwh - remaining
+    if energy <= 0:
+        return None
+    cost = cost_cents / 100.0
+    return ChargeCost(
+        energy_kwh=energy,
+        estimated_cost=cost,
+        average_price=cost / energy,
+        hours_used=hours_used,
+    )
+
+
 @dataclass(frozen=True)
 class ForecastHour:
     """A single forecast hour with its price and provenance.
@@ -65,6 +116,21 @@ class ForecastHour:
     hour_ending: datetime
     price: float
     source: str
+
+
+@dataclass(frozen=True)
+class ChargeCost:
+    """Estimated cost of the upcoming charge, priced over the cheapest hours.
+
+    `energy_kwh` is the wall energy actually priced; it is below the energy
+    needed only when the forecast window is too short to deliver all of it.
+    `estimated_cost` is in dollars; `average_price` is dollars per kWh.
+    """
+
+    energy_kwh: float
+    estimated_cost: float
+    average_price: float
+    hours_used: int
 
 
 @dataclass(frozen=True)
@@ -172,8 +238,9 @@ def plan_charge(
     Feasibility is price-independent (time and energy only); the forecast is
     carried for provenance reporting and display.
     """
-    energy_to_battery = max(0.0, (target_soc - current_soc) / 100.0 * capacity_kwh)
-    energy_needed = energy_to_battery / efficiency if efficiency > 0 else 0.0
+    energy_needed = energy_needed_kwh(
+        current_soc, target_soc, capacity_kwh, efficiency
+    )
 
     hours_needed = (
         ceil(energy_needed / charge_rate_kw) if charge_rate_kw > 0 else 0

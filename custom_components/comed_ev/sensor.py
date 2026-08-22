@@ -12,6 +12,7 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
@@ -19,6 +20,8 @@ from .coordinator import ComEdConfigEntry, ComEdCoordinator, ComEdData
 from .entity import ComEdEntity
 
 CENTS = "¢/kWh"
+DOLLARS = "$"
+DOLLARS_PER_KWH = "$/kWh"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -57,8 +60,26 @@ def _end_soc_attrs(data: ComEdData) -> Mapping[str, Any]:
     }
 
 
+def _charge_cost_attrs(data: ComEdData) -> Mapping[str, Any]:
+    cost = data.charge_cost
+    if cost is None:
+        return {}
+    return {
+        "energy_kwh": round(cost.energy_kwh, 2),
+        "average_price": round(cost.average_price, 4),
+        "hours_used": cost.hours_used,
+    }
+
+
 def _has_departure(coordinator: ComEdCoordinator) -> bool:
     return coordinator._departure_entity is not None
+
+
+def _has_energy_meters(coordinator: ComEdCoordinator) -> bool:
+    return (
+        coordinator._energy_vehicle_entity is not None
+        and coordinator._energy_evse_entity is not None
+    )
 
 
 SENSORS: tuple[ComEdSensorDescription, ...] = (
@@ -123,6 +144,40 @@ SENSORS: tuple[ComEdSensorDescription, ...] = (
             else None
         ),
         attrs_fn=_end_soc_attrs,
+    ),
+    ComEdSensorDescription(
+        key="energy_needed",
+        translation_key="energy_needed",
+        native_unit_of_measurement="kWh",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+        value_fn=lambda d: d.energy_needed_kwh,
+    ),
+    ComEdSensorDescription(
+        key="estimated_charge_cost",
+        translation_key="estimated_charge_cost",
+        native_unit_of_measurement=DOLLARS,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+        value_fn=lambda d: d.charge_cost.estimated_cost if d.charge_cost else None,
+        attrs_fn=_charge_cost_attrs,
+    ),
+    ComEdSensorDescription(
+        key="charge_avg_price",
+        translation_key="charge_avg_price",
+        native_unit_of_measurement=DOLLARS_PER_KWH,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=4,
+        value_fn=lambda d: d.charge_cost.average_price if d.charge_cost else None,
+    ),
+    ComEdSensorDescription(
+        key="measured_efficiency",
+        translation_key="measured_efficiency",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=3,
+        available_fn=_has_energy_meters,
+        value_fn=lambda d: d.measured_efficiency,
     ),
 )
 

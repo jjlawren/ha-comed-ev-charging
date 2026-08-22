@@ -17,6 +17,7 @@ import voluptuous as vol
 
 from .analytics import ThresholdSuggestion, suggest_thresholds
 from .const import (
+    CONF_CAPACITY_ENTITY,
     CONF_CAPACITY_KWH,
     CONF_CEILING_PCT,
     CONF_CHARGE_RATE_ENTITY,
@@ -24,6 +25,8 @@ from .const import (
     CONF_CURRENT_SOC_ENTITY,
     CONF_DEPARTURE_ENTITY,
     CONF_EFFICIENCY,
+    CONF_ENERGY_EVSE_ENTITY,
+    CONF_ENERGY_VEHICLE_ENTITY,
     CONF_FLOOR_PCT,
     CONF_GAMMA,
     CONF_MIN_SOC,
@@ -74,12 +77,25 @@ def _base_schema(defaults: dict[str, Any]) -> vol.Schema:
     """Schema for the core setup fields (entities, battery, mode)."""
     return vol.Schema(
         {
-            vol.Required(
+            vol.Optional(
                 CONF_CAPACITY_KWH, default=defaults.get(CONF_CAPACITY_KWH, 75.0)
             ): _number(1, 300, 0.5, "kWh"),
+            vol.Optional(CONF_CAPACITY_ENTITY): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain=["sensor", "number", "input_number"])
+            ),
             vol.Required(
                 CONF_EFFICIENCY, default=defaults.get(CONF_EFFICIENCY, DEFAULT_EFFICIENCY)
             ): _number(0.5, 1.0, 0.01),
+            vol.Optional(CONF_ENERGY_VEHICLE_ENTITY): selector.EntitySelector(
+                selector.EntitySelectorConfig(
+                    domain="sensor", device_class="energy"
+                )
+            ),
+            vol.Optional(CONF_ENERGY_EVSE_ENTITY): selector.EntitySelector(
+                selector.EntitySelectorConfig(
+                    domain="sensor", device_class="energy"
+                )
+            ),
             vol.Required(CONF_CURRENT_SOC_ENTITY): selector.EntitySelector(
                 selector.EntitySelectorConfig(domain=["sensor", "number"])
             ),

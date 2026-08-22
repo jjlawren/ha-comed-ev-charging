@@ -5,13 +5,16 @@
         "title": "ComEd EV Charging",
         "description": "Charge your EV in the cheapest ComEd hours. The integration reads SOC/target/rate from your entities and publishes a charge_now signal; you wire the charger via your own automation.",
         "data": {
-          "capacity_kwh": "Battery capacity (kWh)",
+          "capacity_kwh": "Battery capacity (kWh, constant)",
+          "capacity_entity": "Battery capacity entity (overrides constant)",
           "efficiency": "Charging efficiency (0-1)",
           "current_soc_entity": "Current state-of-charge entity",
           "target_soc_entity": "Target state-of-charge entity",
           "charge_rate_kw": "Charge rate (kW, constant)",
           "charge_rate_entity": "Charge rate entity (overrides constant)",
           "departure_entity": "Departure time entity (optional)",
+          "energy_vehicle_entity": "Energy delivered to vehicle (kWh sensor, optional)",
+          "energy_evse_entity": "Energy drawn by charger (kWh sensor, optional)",
           "threshold_mode": "Threshold mode"
         }
       },
@@ -58,7 +61,11 @@
       "charge_threshold": { "name": "Charge threshold" },
       "suggested_floor": { "name": "Suggested floor" },
       "suggested_ceiling": { "name": "Suggested ceiling" },
-      "projected_end_soc": { "name": "Projected end SOC" }
+      "projected_end_soc": { "name": "Projected end SOC" },
+      "energy_needed": { "name": "Energy needed to target" },
+      "estimated_charge_cost": { "name": "Estimated charge cost" },
+      "charge_avg_price": { "name": "Estimated charge average price" },
+      "measured_efficiency": { "name": "Measured efficiency" }
     },
     "binary_sensor": {
       "charge_now": { "name": "Charge now" }

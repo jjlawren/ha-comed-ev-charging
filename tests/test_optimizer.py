@@ -15,8 +15,11 @@ from custom_components.comed_ev.optimizer import (
     SOURCE_DAY_AHEAD,
     SOURCE_DAY_OF,
     SOURCE_FALLBACK,
+    ForecastHour,
     build_forecast,
     charge_threshold,
+    energy_needed_kwh,
+    estimate_charge_cost,
     plan_charge,
     should_charge_now,
 )
@@ -191,3 +194,66 @@ def test_forecast_source_recorded_on_plan():
         NOW, departure, 50, 80, 75, 11, 0.9, forecast
     )
     assert plan.forecast_source == SOURCE_DAY_AHEAD
+
+
+# --- energy_needed_kwh -------------------------------------------------------
+
+
+def test_energy_needed_divides_by_efficiency():
+    # 30% of 75 kWh = 22.5 kWh to battery / 0.9 = 25 kWh from the wall.
+    assert energy_needed_kwh(50, 80, 75, 0.9) == pytest.approx(25.0)
+
+
+def test_energy_needed_zero_at_or_above_target():
+    assert energy_needed_kwh(80, 80, 75, 0.9) == 0.0
+    assert energy_needed_kwh(90, 80, 75, 0.9) == 0.0
+
+
+# --- estimate_charge_cost ----------------------------------------------------
+
+
+def _forecast(*prices: float) -> dict:
+    """Build a forecast from consecutive hourly prices (¢/kWh)."""
+    return {
+        (NOW + timedelta(hours=i + 1)): ForecastHour(
+            NOW + timedelta(hours=i + 1), p, SOURCE_DAY_AHEAD
+        )
+        for i, p in enumerate(prices)
+    }
+
+
+def test_cost_picks_cheapest_hours_first():
+    # Need 10 kWh at 10 kW/hr -> one full hour; the 4¢ hour is chosen over 20¢.
+    forecast = _forecast(20.0, 4.0, 30.0)
+    cost = estimate_charge_cost(forecast, energy_needed_kwh=10.0, charge_rate_kw=10.0)
+    assert cost is not None
+    assert cost.hours_used == 1
+    assert cost.energy_kwh == pytest.approx(10.0)
+    assert cost.estimated_cost == pytest.approx(0.40)  # 10 kWh * 4¢ = 40¢
+    assert cost.average_price == pytest.approx(0.04)
+
+
+def test_cost_spans_hours_with_partial_final():
+    # Need 15 kWh at 10 kW/hr: full 4¢ hour (10 kWh) + 5 kWh of the 6¢ hour.
+    forecast = _forecast(6.0, 4.0, 30.0)
+    cost = estimate_charge_cost(forecast, energy_needed_kwh=15.0, charge_rate_kw=10.0)
+    assert cost is not None
+    assert cost.hours_used == 2
+    # (10 * 4¢) + (5 * 6¢) = 70¢ = $0.70 over 15 kWh.
+    assert cost.estimated_cost == pytest.approx(0.70)
+    assert cost.average_price == pytest.approx(0.70 / 15.0)
+
+
+def test_cost_capped_by_short_window():
+    # Only two hours available -> 20 kWh priced though 30 kWh is needed.
+    forecast = _forecast(5.0, 7.0)
+    cost = estimate_charge_cost(forecast, energy_needed_kwh=30.0, charge_rate_kw=10.0)
+    assert cost is not None
+    assert cost.hours_used == 2
+    assert cost.energy_kwh == pytest.approx(20.0)
+
+
+def test_cost_none_when_nothing_to_price():
+    assert estimate_charge_cost({}, 10.0, 10.0) is None
+    assert estimate_charge_cost(_forecast(5.0), 0.0, 10.0) is None
+    assert estimate_charge_cost(_forecast(5.0), 10.0, 0.0) is None
