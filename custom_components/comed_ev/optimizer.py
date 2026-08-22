@@ -106,6 +106,30 @@ def estimate_charge_cost(
     )
 
 
+def hour_buckets(started: datetime, ended: datetime) -> dict[datetime, float]:
+    """Split [started, ended) into hour-ending buckets by time fraction.
+
+    Returns ``{hour_ending: fraction}`` where each key is the top-of-hour that
+    *ends* the hour covering that slice (ComEd's convention: the hour ending
+    03:00 covers 02:00–03:00), and the fractions sum to 1.0. Assumes constant
+    charging power, so a session's energy splits across its hours in proportion
+    to the time spent in each. An empty or reversed interval yields ``{}``.
+    """
+    total = (ended - started).total_seconds()
+    if total <= 0:
+        return {}
+    buckets: dict[datetime, float] = {}
+    # Start of the hour containing `started` (top-of-hour at or below it).
+    hour_start = started.replace(minute=0, second=0, microsecond=0)
+    while hour_start < ended:
+        hour_end = hour_start + timedelta(hours=1)
+        overlap = (min(ended, hour_end) - max(started, hour_start)).total_seconds()
+        if overlap > 0:
+            buckets[hour_end] = overlap / total
+        hour_start = hour_end
+    return buckets
+
+
 @dataclass(frozen=True)
 class ForecastHour:
     """A single forecast hour with its price and provenance.

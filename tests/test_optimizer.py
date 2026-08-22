@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -257,3 +257,34 @@ def test_cost_none_when_nothing_to_price():
     assert estimate_charge_cost({}, 10.0, 10.0) is None
     assert estimate_charge_cost(_forecast(5.0), 0.0, 10.0) is None
     assert estimate_charge_cost(_forecast(5.0), 10.0, 0.0) is None
+
+
+# --- hour_buckets (settled-cost attribution) --------------------------------
+
+
+def test_hour_buckets_single_hour():
+    from custom_components.comed_ev.optimizer import hour_buckets
+
+    start = datetime(2026, 8, 20, 2, 0, tzinfo=UTC)
+    got = hour_buckets(start, start + timedelta(hours=1))
+    assert got == {datetime(2026, 8, 20, 3, 0, tzinfo=UTC): 1.0}
+
+
+def test_hour_buckets_partial_hours_sum_to_one():
+    from custom_components.comed_ev.optimizer import hour_buckets
+
+    # 02:30 -> 04:30: half in hour ending 03:00, full 03:00-04:00, half in 05:00.
+    start = datetime(2026, 8, 20, 2, 30, tzinfo=UTC)
+    got = hour_buckets(start, datetime(2026, 8, 20, 4, 30, tzinfo=UTC))
+    assert pytest.approx(sum(got.values())) == 1.0
+    assert pytest.approx(got[datetime(2026, 8, 20, 3, 0, tzinfo=UTC)]) == 0.25
+    assert pytest.approx(got[datetime(2026, 8, 20, 4, 0, tzinfo=UTC)]) == 0.5
+    assert pytest.approx(got[datetime(2026, 8, 20, 5, 0, tzinfo=UTC)]) == 0.25
+
+
+def test_hour_buckets_empty_interval():
+    from custom_components.comed_ev.optimizer import hour_buckets
+
+    t = datetime(2026, 8, 20, 2, 0, tzinfo=UTC)
+    assert hour_buckets(t, t) == {}
+    assert hour_buckets(t, t - timedelta(hours=1)) == {}
