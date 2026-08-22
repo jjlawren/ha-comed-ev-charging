@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gamma Curve Explorer</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  html, body { margin: 0; }
+  :root {
+    --bg: #f5f7f8;
+    --panel: #ffffff;
+    --ink: #12171b;
+    --muted: #5a6670;
+    --faint: #8b97a0;
+    --line: #dce2e5;
+    --grid: #e7ecee;
+    --accent: #c67b1e;      /* amber — active gamma / price */
+    --accent-soft: #f3e3cd;
+    --teal: #2c8a86;        /* reference curves */
+    --charge: #3f9d5a;      /* willing-to-charge region */
+    --track: #dfe5e8;
+    --shadow: 0 1px 2px rgba(18,23,27,.06), 0 8px 28px rgba(18,23,27,.06);
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    --sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  }
+  :root:not([data-theme="light"]) {
+    @media (prefers-color-scheme: dark) {
+      --bg: #0e1317;
+      --panel: #161d23;
+      --ink: #e7edf1;
+      --muted: #93a1ab;
+      --faint: #66727c;
+      --line: #26313a;
+      --grid: #1d262d;
+      --accent: #e5a343;
+      --accent-soft: #3a2f1c;
+      --teal: #4bb3ad;
+      --charge: #5bb975;
+      --track: #232e36;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0e1317;
+    --panel: #161d23;
+    --ink: #e7edf1;
+    --muted: #93a1ab;
+    --faint: #66727c;
+    --line: #26313a;
+    --grid: #1d262d;
+    --accent: #e5a343;
+    --accent-soft: #3a2f1c;
+    --teal: #4bb3ad;
+    --charge: #5bb975;
+    --track: #232e36;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 40px 24px 64px; }
+
+  header { margin-bottom: 28px; }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 600;
+    margin: 0 0 8px;
+  }
+  h1 {
+    font-size: clamp(26px, 4vw, 38px);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin: 0 0 10px;
+    text-wrap: balance;
+  }
+  .lede {
+    margin: 0;
+    max-width: 60ch;
+    color: var(--muted);
+    font-size: 15.5px;
+  }
+  .lede code {
+    font-family: var(--mono);
+    font-size: .92em;
+    background: var(--accent-soft);
+    color: var(--ink);
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 300px 1fr;
+    gap: 22px;
+    margin-top: 26px;
+    align-items: start;
+  }
+  @media (max-width: 780px) { .grid { grid-template-columns: 1fr; } }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+  }
+
+  /* ---- controls ---- */
+  .controls { padding: 20px 20px 24px; }
+  .ctrl { margin-bottom: 20px; }
+  .ctrl:last-child { margin-bottom: 0; }
+  .ctrl.hero {
+    background: var(--accent-soft);
+    margin: -4px -8px 22px;
+    padding: 14px 12px 16px;
+    border-radius: 10px;
+  }
+  .ctrl-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 8px;
+  }
+  .ctrl-label {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: .01em;
+  }
+  .ctrl.hero .ctrl-label { color: var(--accent); }
+  .ctrl-val {
+    font-family: var(--mono);
+    font-size: 14px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .ctrl.hero .ctrl-val { font-size: 17px; color: var(--accent); }
+  .ctrl-sub {
+    font-size: 11.5px;
+    color: var(--faint);
+    margin-top: 6px;
+    font-family: var(--mono);
+  }
+
+  input[type=range] {
+    -webkit-appearance: none; appearance: none;
+    width: 100%; height: 22px; background: transparent; cursor: pointer; margin: 0;
+  }
+  input[type=range]::-webkit-slider-runnable-track {
+    height: 5px; border-radius: 4px; background: var(--track);
+  }
+  input[type=range]::-moz-range-track {
+    height: 5px; border-radius: 4px; background: var(--track);
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 17px; height: 17px; margin-top: -6px;
+    border-radius: 50%; background: var(--muted);
+    border: 3px solid var(--panel); box-shadow: 0 0 0 1px var(--line);
+  }
+  input[type=range]::-moz-range-thumb {
+    width: 14px; height: 14px; border-radius: 50%;
+    background: var(--muted); border: 3px solid var(--panel); box-shadow: 0 0 0 1px var(--line);
+  }
+  .hero input[type=range]::-webkit-slider-runnable-track { height: 6px; }
+  .hero input[type=range]::-webkit-slider-thumb {
+    width: 21px; height: 21px; margin-top: -7px; background: var(--accent);
+  }
+  .hero input[type=range]::-moz-range-thumb { background: var(--accent); }
+  input[type=range]:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 4px; }
+
+  .reset {
+    font-family: var(--mono); font-size: 12px;
+    background: transparent; color: var(--muted);
+    border: 1px solid var(--line); border-radius: 7px;
+    padding: 7px 12px; cursor: pointer; width: 100%; margin-top: 4px;
+  }
+  .reset:hover { color: var(--ink); border-color: var(--muted); }
+
+  /* ---- chart ---- */
+  .chart-card { padding: 18px 18px 12px; }
+  .chart-top {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    gap: 16px; flex-wrap: wrap; margin-bottom: 8px; padding: 2px 4px;
+  }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); }
+  .swatch { width: 16px; height: 3px; border-radius: 2px; display: inline-block; }
+  .swatch.dash { background: repeating-linear-gradient(90deg, var(--faint) 0 4px, transparent 4px 7px); height: 2px; }
+
+  svg.plot { width: 100%; height: auto; display: block; touch-action: none; }
+  .axis-label { font-family: var(--mono); font-size: 11px; fill: var(--faint); }
+  .tick-label { font-family: var(--mono); font-size: 10.5px; fill: var(--faint); }
+  .ghost-label { font-family: var(--mono); font-size: 10px; fill: var(--faint); }
+
+  /* ---- readout ---- */
+  .readout {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px;
+    background: var(--line); border-radius: 10px; overflow: hidden; margin: 14px 4px 4px;
+  }
+  @media (max-width: 480px) { .readout { grid-template-columns: repeat(2, 1fr); } }
+  .stat { background: var(--panel); padding: 12px 14px; }
+  .stat-k { font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); font-family: var(--mono); }
+  .stat-v { font-family: var(--mono); font-size: 20px; font-weight: 600; margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .stat-v small { font-size: 12px; color: var(--muted); font-weight: 400; }
+  .stat.hl .stat-v { color: var(--accent); }
+  .stat.charge-yes .stat-v { color: var(--charge); }
+
+  .formula {
+    font-family: var(--mono); font-size: 13px; color: var(--muted);
+    margin: 24px 4px 0; padding: 14px 16px; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 10px; line-height: 1.7;
+    overflow-x: auto;
+  }
+  .formula b { color: var(--accent); font-weight: 600; }
+  .formula .t { color: var(--teal); }
+  .foot { margin-top: 22px; font-size: 12.5px; color: var(--faint); font-family: var(--mono); }
+</style>
+
+<div class="wrap">
+  <header>
+    <p class="eyebrow">comed_ev · optimizer</p>
+    <h1>Gamma Curve Explorer</h1>
+    <p class="lede">Gamma shapes the willingness-to-pay curve <code>T(SOC)</code> — the ¢/kWh
+      ceiling below which the car charges. A higher <code>gamma</code> holds the threshold near the
+      price floor across the high-SOC band and only ramps toward the ceiling when the battery is
+      genuinely low. Drag it and watch the family of curves.</p>
+  </header>
+
+  <div class="grid">
+    <div class="card controls">
+      <div class="ctrl hero">
+        <div class="ctrl-head">
+          <span class="ctrl-label">Curve steepness — gamma</span>
+          <span class="ctrl-val" id="v-gamma">2.5</span>
+        </div>
+        <input type="range" id="gamma" min="0.5" max="6" step="0.1" value="2.5">
+        <div class="ctrl-sub">1.0 = linear ramp · &gt;1 = patient · &lt;1 = eager</div>
+      </div>
+
+      <div class="ctrl">
+        <div class="ctrl-head"><span class="ctrl-label">Target SOC</span><span class="ctrl-val" id="v-target">80%</span></div>
+        <input type="range" id="target" min="40" max="100" step="1" value="80">
+      </div>
+      <div class="ctrl">
+        <div class="ctrl-head"><span class="ctrl-label">Urgency-full SOC (min)</span><span class="ctrl-val" id="v-min">0%</span></div>
+        <input type="range" id="minsoc" min="0" max="60" step="1" value="0">
+      </div>
+      <div class="ctrl">
+        <div class="ctrl-head"><span class="ctrl-label">Price floor</span><span class="ctrl-val" id="v-floor">3.0¢</span></div>
+        <input type="range" id="floor" min="0" max="12" step="0.5" value="3">
+      </div>
+      <div class="ctrl">
+        <div class="ctrl-head"><span class="ctrl-label">Price ceiling</span><span class="ctrl-val" id="v-ceil">14.0¢</span></div>
+        <input type="range" id="ceil" min="4" max="30" step="0.5" value="14">
+      </div>
+      <button class="reset" id="reset">Reset to defaults</button>
+    </div>
+
+    <div class="card chart-card">
+      <div class="chart-top">
+        <div class="legend">
+          <span><i class="swatch" style="background:var(--accent)"></i>active γ</span>
+          <span><i class="swatch dash"></i>reference γ</span>
+          <span><i class="swatch" style="background:var(--charge)"></i>charging region</span>
+        </div>
+      </div>
+      <svg class="plot" viewBox="0 0 660 380" id="svg" role="img" aria-label="Willingness-to-pay curve versus state of charge"></svg>
+
+      <div class="readout">
+        <div class="stat hl">
+          <div class="stat-k">Probe SOC</div>
+          <div class="stat-v"><span id="r-soc">40</span><small>%</small></div>
+        </div>
+        <div class="stat">
+          <div class="stat-k">Urgency</div>
+          <div class="stat-v"><span id="r-urg">0.50</span></div>
+        </div>
+        <div class="stat">
+          <div class="stat-k">Threshold T</div>
+          <div class="stat-v"><span id="r-thr">5.75</span><small>¢</small></div>
+        </div>
+        <div class="stat" id="stat-charge">
+          <div class="stat-k">At 6¢ price</div>
+          <div class="stat-v" id="r-dec">charge</div>
+        </div>
+      </div>
+
+      <div class="formula">
+        urgency = (target − SOC) / (target − min) = <span class="t" id="f-urg">0.50</span><br>
+        T(SOC) = floor + (ceiling − floor) · urgency<sup><b id="f-g">2.5</b></sup>
+        = <span id="f-t">5.75</span>¢
+      </div>
+    </div>
+  </div>
+
+  <p class="foot">Drag anywhere on the plot to move the probe. Defaults mirror
+    DEFAULT_GAMMA 2.5, floor 3.0¢, ceiling 14.0¢, target 80%.</p>
+</div>
+
+<script>
+(function () {
+  const svgNS = "http://www.w3.org/2000/svg";
+  const svg = document.getElementById("svg");
+  const VB = { w: 660, h: 380 };
+  const M = { l: 48, r: 74, t: 18, b: 40 };
+  const PW = VB.w - M.l - M.r, PH = VB.h - M.t - M.b;
+
+  const el = id => document.getElementById(id);
+  const P = {
+    gamma: el("gamma"), target: el("target"), minsoc: el("minsoc"),
+    floor: el("floor"), ceil: el("ceil")
+  };
+  const defaults = { gamma: 2.5, target: 80, minsoc: 0, floor: 3, ceil: 14 };
+  let probe = 40;               // probe SOC
+  const REF_GAMMAS = [1, 2.5, 5];
+  const PRICE = 6;              // sample price for the decision readout
+
+  const state = () => ({
+    gamma: +P.gamma.value, target: +P.target.value, minsoc: +P.minsoc.value,
+    floor: +P.floor.value, ceil: +P.ceil.value
+  });
+
+  // model (mirrors optimizer.charge_threshold)
+  function urgency(soc, s) {
+    const span = s.target - s.minsoc;
+    if (span <= 0) return soc >= s.target ? 0 : 1;
+    return Math.max(0, Math.min(1, (s.target - soc) / span));
+  }
+  function threshold(soc, s, g) {
+    if (soc >= s.target) return 0;
+    return s.floor + (s.ceil - s.floor) * Math.pow(urgency(soc, s), g);
+  }
+
+  const X = soc => M.l + (soc / 100) * PW;
+  const Y = (t, ymax) => M.t + (1 - t / ymax) * PH;
+
+  function mk(tag, attrs) {
+    const n = document.createElementNS(svgNS, tag);
+    for (const k in attrs) n.setAttribute(k, attrs[k]);
+    return n;
+  }
+  function pathFor(s, g, ymax) {
+    let d = "";
+    for (let soc = 0; soc <= 100; soc += 1) {
+      const t = threshold(soc, s, g);
+      d += (soc === 0 ? "M" : "L") + X(soc).toFixed(1) + " " + Y(t, ymax).toFixed(1) + " ";
+    }
+    return d;
+  }
+
+  function niceMax(v) {
+    const steps = [4, 6, 8, 10, 12, 15, 18, 20, 24, 28, 30, 35, 40];
+    for (const s of steps) if (v <= s) return s;
+    return Math.ceil(v / 5) * 5;
+  }
+
+  function render() {
+    const s = state();
+    const ymax = niceMax(s.ceil);
+    svg.textContent = "";
+
+    // plot frame bg
+    svg.appendChild(mk("rect", { x: M.l, y: M.t, width: PW, height: PH, fill: "var(--panel)" }));
+
+    // charging region: shade where T(SOC) at probe... actually shade under active curve is busy.
+    // Instead shade the "never charge" band right of target.
+    svg.appendChild(mk("rect", {
+      x: X(s.target), y: M.t, width: (M.l + PW) - X(s.target), height: PH,
+      fill: "var(--grid)", opacity: "0.55"
+    }));
+
+    // y gridlines + labels
+    const yticks = 5;
+    for (let i = 0; i <= yticks; i++) {
+      const val = (ymax / yticks) * i;
+      const yy = Y(val, ymax);
+      svg.appendChild(mk("line", { x1: M.l, y1: yy, x2: M.l + PW, y2: yy, stroke: "var(--grid)", "stroke-width": 1 }));
+      const lb = mk("text", { x: M.l - 8, y: yy + 3.5, "text-anchor": "end", class: "tick-label" });
+      lb.textContent = val.toFixed(0);
+      svg.appendChild(lb);
+    }
+    // x gridlines + labels
+    for (let soc = 0; soc <= 100; soc += 20) {
+      const xx = X(soc);
+      svg.appendChild(mk("line", { x1: xx, y1: M.t, x2: xx, y2: M.t + PH, stroke: "var(--grid)", "stroke-width": 1 }));
+      const lb = mk("text", { x: xx, y: M.t + PH + 16, "text-anchor": "middle", class: "tick-label" });
+      lb.textContent = soc;
+      svg.appendChild(lb);
+    }
+
+    // axis titles
+    const xt = mk("text", { x: M.l + PW / 2, y: VB.h - 4, "text-anchor": "middle", class: "axis-label" });
+    xt.textContent = "state of charge  (%)";
+    svg.appendChild(xt);
+    const yt = mk("text", { x: 14, y: M.t + PH / 2, "text-anchor": "middle", class: "axis-label",
+      transform: `rotate(-90 14 ${M.t + PH / 2})` });
+    yt.textContent = "threshold  T  (¢/kWh)";
+    svg.appendChild(yt);
+
+    // sample-price reference line
+    if (PRICE <= ymax) {
+      const py = Y(PRICE, ymax);
+      svg.appendChild(mk("line", { x1: M.l, y1: py, x2: M.l + PW, y2: py,
+        stroke: "var(--charge)", "stroke-width": 1.2, "stroke-dasharray": "2 4", opacity: 0.8 }));
+      const pl = mk("text", { x: M.l + PW + 6, y: py + 3.5, class: "ghost-label", fill: "var(--charge)" });
+      pl.textContent = PRICE + "¢";
+      svg.appendChild(pl);
+    }
+
+    // target marker label
+    const tl = mk("text", { x: X(s.target), y: M.t + 12, "text-anchor": "middle", class: "ghost-label" });
+    tl.textContent = "target " + s.target + "%";
+    if (s.target > 82) tl.setAttribute("text-anchor", "end");
+    svg.appendChild(tl);
+
+    // ghost reference curves
+    REF_GAMMAS.forEach(g => {
+      if (Math.abs(g - s.gamma) < 0.05) return;
+      svg.appendChild(mk("path", { d: pathFor(s, g, ymax), fill: "none",
+        stroke: "var(--faint)", "stroke-width": 1.3, "stroke-dasharray": "4 4", opacity: 0.6 }));
+      // label near left-ish (soc where curve is mid)
+      const lsoc = s.minsoc + (s.target - s.minsoc) * 0.14;
+      const ly = Y(threshold(lsoc, s, g), ymax);
+      const gl = mk("text", { x: X(lsoc) + 4, y: ly - 4, class: "ghost-label" });
+      gl.textContent = "γ" + g;
+      svg.appendChild(gl);
+    });
+
+    // active curve
+    svg.appendChild(mk("path", { d: pathFor(s, s.gamma, ymax), fill: "none",
+      stroke: "var(--accent)", "stroke-width": 2.6, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+
+    // probe
+    const pt = threshold(probe, s, s.gamma);
+    const px = X(probe), pyv = Y(pt, ymax);
+    svg.appendChild(mk("line", { x1: px, y1: M.t, x2: px, y2: M.t + PH,
+      stroke: "var(--ink)", "stroke-width": 1, opacity: 0.28 }));
+    svg.appendChild(mk("circle", { cx: px, cy: pyv, r: 5.5, fill: "var(--accent)",
+      stroke: "var(--panel)", "stroke-width": 2 }));
+
+    // readouts
+    const u = urgency(probe, s);
+    el("v-gamma").textContent = s.gamma.toFixed(1);
+    el("v-target").textContent = s.target + "%";
+    el("v-min").textContent = s.minsoc + "%";
+    el("v-floor").textContent = s.floor.toFixed(1) + "¢";
+    el("v-ceil").textContent = s.ceil.toFixed(1) + "¢";
+
+    el("r-soc").textContent = probe;
+    el("r-urg").textContent = u.toFixed(2);
+    el("r-thr").textContent = pt.toFixed(2);
+    el("f-urg").textContent = u.toFixed(2);
+    el("f-g").textContent = s.gamma.toFixed(1);
+    el("f-t").textContent = pt.toFixed(2);
+
+    const willing = pt >= PRICE && probe < s.target;
+    const dec = el("r-dec");
+    dec.textContent = willing ? "charge" : (probe >= s.target ? "done" : "wait");
+    el("stat-charge").classList.toggle("charge-yes", willing);
+  }
+
+  Object.values(P).forEach(inp => inp.addEventListener("input", render));
+  el("reset").addEventListener("click", () => {
+    for (const k in defaults) P[k].value = defaults[k];
+    probe = 40; render();
+  });
+
+  // probe drag
+  function setProbeFromEvent(e) {
+    const r = svg.getBoundingClientRect();
+    const cx = (e.touches ? e.touches[0].clientX : e.clientX) - r.left;
+    const svgx = (cx / r.width) * VB.w;
+    let soc = Math.round(((svgx - M.l) / PW) * 100);
+    probe = Math.max(0, Math.min(100, soc));
+    render();
+  }
+  let dragging = false;
+  svg.addEventListener("pointerdown", e => { dragging = true; svg.setPointerCapture(e.pointerId); setProbeFromEvent(e); });
+  svg.addEventListener("pointermove", e => { if (dragging) setProbeFromEvent(e); });
+  svg.addEventListener("pointerup", () => { dragging = false; });
+  svg.addEventListener("pointercancel", () => { dragging = false; });
+
+  render();
+})();
+</script>
+</body>
+</html>

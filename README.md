@@ -19,7 +19,9 @@ SOC falls: define a price floor (always charge below) and a realistic ceiling (m
 worth paying near empty), and the component charges when the **live 5-minute price**
 sits under a curve `T(SOC)` between them. A gentle `gamma > 1` curve keeps the
 threshold near the floor across the high-SOC band and only ramps toward the ceiling
-when the battery is genuinely low.
+when the battery is genuinely low. To see how `gamma` and the other parameters reshape
+the curve, open [`docs/gamma-curve-explorer.html`](docs/gamma-curve-explorer.html) in a
+browser — an interactive plot of `T(SOC)`.
 
 - **No departure needed** for the common case — SOC pressure vs. the live price decides.
 - **Optional departure** adds an hourly feasibility check: if there is no longer enough
