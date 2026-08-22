@@ -45,8 +45,8 @@ number entities.
 | `sensor.comed_ev_charge_threshold` | Current `T(SOC)`; attributes: floor/ceiling, mode. |
 | `sensor.comed_ev_projected_end_soc` | Deadline mode only: projected SOC at departure. |
 | `sensor.comed_ev_energy_needed_to_target` | Wall energy (kWh) to reach target SOC (target−current, divided by efficiency). |
-| `sensor.comed_ev_estimated_charge_cost` | Estimated cost ($) of the upcoming charge, priced over the cheapest forecast hours plus the fixed distribution rate. Window is now→departure (deadline mode) or now→next 6 AM Central otherwise. Attributes: `energy_kwh`, `average_price`, `supply_cost`, `distribution_cost`, `hours_used`. |
-| `sensor.comed_ev_estimated_charge_average_price` | Estimated average $/kWh for that charge. |
+| `sensor.comed_ev_estimated_charge_cost` | Estimated cost ($) of the upcoming charge, priced over the cheapest forecast hours plus the fixed distribution rate. Window is now→departure (deadline mode) or now→next 6 AM Central otherwise. Attributes: `energy_kwh`, `average_price` (supply-only $/kWh), `supply_cost`, `distribution_cost`, `hours_used`. |
+| `sensor.comed_ev_estimated_charge_average_price` | Estimated supply-only average $/kWh for that charge (excludes the distribution rate). |
 | `sensor.comed_ev_suggested_floor` / `_ceiling` | Analytics recommendations (disabled by default). |
 | `sensor.comed_ev_measured_efficiency` | Measured vehicle/wall ratio when energy meters are set (diagnostic). |
 | `sensor.comed_ev_last_session_cost` | Actual cost ($) of the last charge session: ComEd settled *supply* prices plus the fixed distribution rate. Attributes: `energy_kwh`, `cents_per_kwh` (effective), `supply_cost`, `distribution_cost`, `energy_source` (`meter`/`soc`), `started`, `ended`. |

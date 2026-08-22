@@ -254,7 +254,8 @@ def test_cost_includes_distribution_rate():
     assert cost.supply_cost == pytest.approx(0.40)
     assert cost.distribution_cost == pytest.approx(0.50)  # 10 kWh * 5¢
     assert cost.estimated_cost == pytest.approx(0.90)
-    assert cost.average_price == pytest.approx(0.09)
+    # Average price is supply-only; it excludes the 5¢ distribution rate.
+    assert cost.average_price == pytest.approx(0.04)
 
 
 def test_cost_capped_by_short_window():

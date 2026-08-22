@@ -109,7 +109,7 @@ def estimate_charge_cost(
         estimated_cost=cost,
         supply_cost=supply_cost,
         distribution_cost=distribution_cost,
-        average_price=cost / energy,
+        average_price=supply_cost / energy,
         hours_used=hours_used,
     )
 
@@ -157,7 +157,8 @@ class ChargeCost:
     `energy_kwh` is the wall energy actually priced; it is below the energy
     needed only when the forecast window is too short to deliver all of it.
     `estimated_cost` is the total in dollars (`supply_cost` +
-    `distribution_cost`); `average_price` is dollars per kWh.
+    `distribution_cost`); `average_price` is the supply-only dollars per kWh
+    (it excludes the fixed distribution rate).
     """
 
     energy_kwh: float
