@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
 from homeassistant.core import HomeAssistant
+import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.comed_ev.const import (
@@ -18,7 +18,9 @@ from custom_components.comed_ev.const import (
 )
 
 
-def _entry(extra_data: dict | None = None) -> MockConfigEntry:
+def _entry(
+    extra_data: dict | None = None, extra_options: dict | None = None
+) -> MockConfigEntry:
     return MockConfigEntry(
         domain=DOMAIN,
         title="ComEd EV Charging",
@@ -30,7 +32,7 @@ def _entry(extra_data: dict | None = None) -> MockConfigEntry:
             "charge_rate_kw": 11.0,
             **(extra_data or {}),
         },
-        options={CONF_THRESHOLD_MODE: MODE_AUTO},
+        options={CONF_THRESHOLD_MODE: MODE_AUTO, **(extra_options or {})},
     )
 
 
@@ -155,8 +157,6 @@ async def test_decay_reweights_recent_sessions(
     """Old totals decay before a new delta lands, so it weighs more."""
     from datetime import timedelta
 
-    from homeassistant.util import dt as dt_util
-
     hass.states.async_set("sensor.ev_soc", "20")
     hass.states.async_set("number.ev_target", "80")
     hass.states.async_set("sensor.ev_delivered", "0")
@@ -233,3 +233,370 @@ async def test_target_reached_turns_off(hass: HomeAssistant, mock_client) -> Non
     charge = hass.states.get("binary_sensor.comed_ev_charging_charge_now")
     assert charge.state == "off"
     assert charge.attributes["reason"] == "target_reached"
+
+
+# --- session recording (phase 2) --------------------------------------------
+
+
+def _decision_data(coordinator, charge_now: bool):
+    """Build a minimal ComEdData carrying a charge decision for the given state."""
+    from custom_components.comed_ev.coordinator import ComEdData
+    from custom_components.comed_ev.optimizer import ChargeDecision
+
+    return ComEdData(
+        live_price=4.0,
+        hourly_price=4.0,
+        decision=ChargeDecision(
+            charge_now=charge_now, reason="", live_price=4.0, threshold=5.0
+        ),
+        suggestion=coordinator._suggestion,
+        effective_floor=3.0,
+        effective_ceiling=14.0,
+        mode=MODE_AUTO,
+    )
+
+
+async def _build_coordinator(hass, extra_data=None, extra_options=None):
+    import uuid
+
+    from custom_components.comed_ev.session_store import SessionStore
+
+    entry = _entry(extra_data, extra_options)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = entry.runtime_data
+    # Isolate the session DB per test with a unique name under the hass config
+    # dir (the default file is shared across tests; the config dir is cleaned by
+    # the hass fixture, after background tasks drain, avoiding a teardown race).
+    coordinator._session_store = SessionStore(
+        hass.config.path(".storage", f"sessions_{uuid.uuid4().hex}.db")
+    )
+    await hass.async_add_executor_job(coordinator._session_store.setup)
+    return coordinator
+
+
+async def test_session_recorded_from_meter(hass: HomeAssistant, mock_client) -> None:
+    """A full on->off run with a wall meter records one meter-sourced session."""
+    from datetime import UTC, datetime, timedelta
+
+    hass.states.async_set("sensor.ev_soc", "20")
+    hass.states.async_set("number.ev_target", "80")
+    hass.states.async_set("sensor.evse_drawn", "0")
+
+    coordinator = await _build_coordinator(
+        hass, {CONF_ENERGY_EVSE_ENTITY: "sensor.evse_drawn"}
+    )
+    t0 = datetime(2026, 8, 20, 2, 0, tzinfo=UTC)
+
+    # Observe not-charging first, then a rising edge opens the session.
+    await coordinator._update_session(_decision_data(coordinator, False), t0)
+    await coordinator._update_session(
+        _decision_data(coordinator, True), t0 + timedelta(minutes=5)
+    )
+    # Wall meter advances during the run.
+    hass.states.async_set("sensor.evse_drawn", "12.0")
+    await hass.async_block_till_done()
+    # Falling edge closes and records the session.
+    await coordinator._update_session(
+        _decision_data(coordinator, False), t0 + timedelta(hours=3)
+    )
+
+    sessions = await hass.async_add_executor_job(
+        coordinator._session_store.list_sessions
+    )
+    assert len(sessions) == 1
+    assert sessions[0].energy_source == "meter"
+    assert sessions[0].energy_kwh == pytest.approx(12.0, abs=1e-3)
+    assert sessions[0].settled_complete is False
+
+
+async def test_session_soc_fallback(hass: HomeAssistant, mock_client) -> None:
+    """With no meter, energy comes from the SOC rise (source 'soc')."""
+    from datetime import UTC, datetime, timedelta
+
+    hass.states.async_set("sensor.ev_soc", "20")
+    hass.states.async_set("number.ev_target", "80")
+
+    coordinator = await _build_coordinator(hass)
+    t0 = datetime(2026, 8, 20, 2, 0, tzinfo=UTC)
+
+    await coordinator._update_session(_decision_data(coordinator, False), t0)
+    await coordinator._update_session(
+        _decision_data(coordinator, True), t0 + timedelta(minutes=5)
+    )
+    # SOC climbs 20 -> 60 over the run.
+    hass.states.async_set("sensor.ev_soc", "60")
+    await hass.async_block_till_done()
+    await coordinator._update_session(
+        _decision_data(coordinator, False), t0 + timedelta(hours=2)
+    )
+
+    sessions = await hass.async_add_executor_job(
+        coordinator._session_store.list_sessions
+    )
+    assert len(sessions) == 1
+    assert sessions[0].energy_source == "soc"
+    # 40% of 75 kWh into the battery, / 0.9 efficiency = ~33.3 kWh at the wall.
+    assert sessions[0].energy_kwh == pytest.approx(0.40 * 75.0 / 0.9, abs=1e-3)
+    assert sessions[0].start_soc == 20.0
+    assert sessions[0].end_soc == 60.0
+
+
+async def test_straddling_session_dropped(hass: HomeAssistant, mock_client) -> None:
+    """A charge already on at startup is dropped, not recorded (Option A)."""
+    from datetime import UTC, datetime, timedelta
+
+    hass.states.async_set("sensor.ev_soc", "20")
+    hass.states.async_set("number.ev_target", "80")
+
+    coordinator = await _build_coordinator(hass)
+    t0 = datetime(2026, 8, 20, 2, 0, tzinfo=UTC)
+
+    # First observation is already charging -> straddling, no session opened.
+    await coordinator._update_session(_decision_data(coordinator, True), t0)
+    assert coordinator._session is None
+    # The eventual falling edge records nothing.
+    await coordinator._update_session(
+        _decision_data(coordinator, False), t0 + timedelta(hours=1)
+    )
+
+    sessions = await hass.async_add_executor_job(
+        coordinator._session_store.list_sessions
+    )
+    assert sessions == []
+
+
+async def test_zero_energy_session_not_recorded(
+    hass: HomeAssistant, mock_client
+) -> None:
+    """A run that delivered no measurable energy is not recorded."""
+    from datetime import UTC, datetime, timedelta
+
+    hass.states.async_set("sensor.ev_soc", "80")
+    hass.states.async_set("number.ev_target", "80")
+
+    coordinator = await _build_coordinator(hass)
+    t0 = datetime(2026, 8, 20, 2, 0, tzinfo=UTC)
+
+    await coordinator._update_session(_decision_data(coordinator, False), t0)
+    await coordinator._update_session(
+        _decision_data(coordinator, True), t0 + timedelta(minutes=5)
+    )
+    # SOC unchanged; no meter -> zero energy.
+    await coordinator._update_session(
+        _decision_data(coordinator, False), t0 + timedelta(hours=1)
+    )
+
+    sessions = await hass.async_add_executor_job(
+        coordinator._session_store.list_sessions
+    )
+    assert sessions == []
+
+
+# --- settled-cost backfill (phase 3) ----------------------------------------
+
+
+def _hourly(central_hour: int, actual):
+    """A HourlyPrice for an August (CDT) hour-ending, actual in $/kWh."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from comed_hourly_pricing import HourlyPrice
+
+    central = ZoneInfo("America/Chicago")
+    return HourlyPrice(
+        hour_ending=datetime(2026, 8, 20, central_hour, 0, tzinfo=central),
+        estimated=actual,
+        actual=actual,
+    )
+
+
+async def test_settle_costs_prices_a_session(
+    hass: HomeAssistant, mock_client
+) -> None:
+    """A fully-settled session gets a time-weighted cost at settled prices."""
+    from datetime import UTC, datetime
+
+    hass.states.async_set("sensor.ev_soc", "20")
+    hass.states.async_set("number.ev_target", "80")
+    coordinator = await _build_coordinator(hass)
+
+    # Session 07:30-08:30 UTC = 02:30-03:30 CDT -> buckets ending 03:00 & 04:00
+    # CDT (08:00 & 09:00 UTC), each half the run.
+    await hass.async_add_executor_job(
+        lambda: coordinator._session_store.insert_session(
+            started_utc=datetime(2026, 8, 20, 7, 30, tzinfo=UTC),
+            ended_utc=datetime(2026, 8, 20, 8, 30, tzinfo=UTC),
+            energy_kwh=20.0,
+            energy_source="meter",
+        )
+    )
+    # Settled prices: 3¢ for the 03:00 hour, 5¢ for the 04:00 hour.
+    mock_client.get_dual.return_value = (_hourly(3, 0.03), _hourly(4, 0.05))
+
+    await coordinator._async_settle_costs()
+
+    sessions = await hass.async_add_executor_job(
+        coordinator._session_store.list_sessions
+    )
+    assert sessions[0].settled_complete is True
+    # 20 kWh * (0.5*3¢ + 0.5*5¢) = 80¢.
+    assert sessions[0].settled_cost_cents == pytest.approx(80.0)
+
+
+async def test_settle_costs_partial_stays_incomplete(
+    hass: HomeAssistant, mock_client
+) -> None:
+    """A session with an unsettled hour keeps settled_complete False."""
+    from datetime import UTC, datetime
+
+    hass.states.async_set("sensor.ev_soc", "20")
+    hass.states.async_set("number.ev_target", "80")
+    coordinator = await _build_coordinator(hass)
+
+    await hass.async_add_executor_job(
+        lambda: coordinator._session_store.insert_session(
+            started_utc=datetime(2026, 8, 20, 7, 30, tzinfo=UTC),
+            ended_utc=datetime(2026, 8, 20, 8, 30, tzinfo=UTC),
+            energy_kwh=20.0,
+            energy_source="meter",
+        )
+    )
+    # Only the first hour has settled; the 04:00 hour is still n/a.
+    mock_client.get_dual.return_value = (_hourly(3, 0.03), _hourly(4, None))
+
+    await coordinator._async_settle_costs()
+
+    sessions = await hass.async_add_executor_job(
+        coordinator._session_store.list_sessions
+    )
+    assert sessions[0].settled_complete is False
+    assert sessions[0].settled_cost_cents is None
+
+
+# --- exposure: sensors and service (phase 4) --------------------------------
+
+
+async def test_last_session_sensors_with_savings(
+    hass: HomeAssistant, mock_client
+) -> None:
+    """Settling a session publishes cost and (with a flat rate) savings."""
+    from datetime import UTC, datetime
+
+    from custom_components.comed_ev.const import CONF_FLAT_RATE
+
+    hass.states.async_set("sensor.ev_soc", "20")
+    hass.states.async_set("number.ev_target", "80")
+    # Flat baseline 10¢/kWh so savings sensor is created and computable.
+    coordinator = await _build_coordinator(hass, extra_options={CONF_FLAT_RATE: 10.0})
+
+    await hass.async_add_executor_job(
+        lambda: coordinator._session_store.insert_session(
+            started_utc=datetime(2026, 8, 20, 7, 30, tzinfo=UTC),
+            ended_utc=datetime(2026, 8, 20, 8, 30, tzinfo=UTC),
+            energy_kwh=20.0,
+            energy_source="meter",
+        )
+    )
+    mock_client.get_dual.return_value = (_hourly(3, 0.03), _hourly(4, 0.05))
+    await coordinator._async_settle_costs()
+    await hass.async_block_till_done()
+
+    cost = hass.states.get("sensor.comed_ev_charging_last_session_cost")
+    assert cost is not None
+    assert float(cost.state) == pytest.approx(0.80)  # 80¢
+    assert cost.attributes["cents_per_kwh"] == pytest.approx(4.0)
+    assert cost.attributes["energy_source"] == "meter"
+
+    # Baseline 10¢ * 20 kWh = $2.00; settled $0.80 -> $1.20 saved.
+    savings = hass.states.get("sensor.comed_ev_charging_last_session_savings")
+    assert savings is not None
+    assert float(savings.state) == pytest.approx(1.20)
+
+
+async def test_savings_sensor_absent_without_flat_rate(
+    hass: HomeAssistant, mock_client
+) -> None:
+    """No flat-rate baseline -> the savings sensor is not created."""
+    hass.states.async_set("sensor.ev_soc", "20")
+    hass.states.async_set("number.ev_target", "80")
+    await _build_coordinator(hass)
+    assert hass.states.get("sensor.comed_ev_charging_last_session_savings") is None
+
+
+async def test_get_sessions_service(hass: HomeAssistant, mock_client) -> None:
+    """The get_sessions service returns recorded rows with derived fields."""
+    from datetime import UTC, datetime
+
+    from custom_components.comed_ev.const import CONF_FLAT_RATE
+
+    hass.states.async_set("sensor.ev_soc", "20")
+    hass.states.async_set("number.ev_target", "80")
+    coordinator = await _build_coordinator(hass, extra_options={CONF_FLAT_RATE: 10.0})
+
+    await hass.async_add_executor_job(
+        lambda: coordinator._session_store.insert_session(
+            started_utc=datetime(2026, 8, 20, 7, 30, tzinfo=UTC),
+            ended_utc=datetime(2026, 8, 20, 8, 30, tzinfo=UTC),
+            energy_kwh=20.0,
+            energy_source="meter",
+        )
+    )
+    mock_client.get_dual.return_value = (_hourly(3, 0.03), _hourly(4, 0.05))
+    await coordinator._async_settle_costs()
+
+    response = await hass.services.async_call(
+        DOMAIN, "get_sessions", {}, blocking=True, return_response=True
+    )
+    rows = response["sessions"]
+    assert len(rows) == 1
+    assert rows[0]["supply_cost"] == pytest.approx(0.80)
+    assert rows[0]["total_cost"] == pytest.approx(0.80)  # no distribution set
+    assert rows[0]["cents_per_kwh"] == pytest.approx(4.0)
+    assert rows[0]["savings"] == pytest.approx(1.20)
+    assert rows[0]["settled_complete"] is True
+    assert rows[0]["energy_source"] == "meter"
+
+
+async def test_distribution_rate_added_to_cost(
+    hass: HomeAssistant, mock_client
+) -> None:
+    """Distribution ¢/kWh is added to settled supply for actual cost, but not
+    to savings (which stays a supply-only comparison)."""
+    from datetime import UTC, datetime
+
+    from custom_components.comed_ev.const import (
+        CONF_DISTRIBUTION_RATE,
+        CONF_FLAT_RATE,
+    )
+
+    hass.states.async_set("sensor.ev_soc", "20")
+    hass.states.async_set("number.ev_target", "80")
+    coordinator = await _build_coordinator(
+        hass,
+        extra_options={CONF_FLAT_RATE: 10.0, CONF_DISTRIBUTION_RATE: 6.0},
+    )
+
+    await hass.async_add_executor_job(
+        lambda: coordinator._session_store.insert_session(
+            started_utc=datetime(2026, 8, 20, 7, 30, tzinfo=UTC),
+            ended_utc=datetime(2026, 8, 20, 8, 30, tzinfo=UTC),
+            energy_kwh=20.0,
+            energy_source="meter",
+        )
+    )
+    mock_client.get_dual.return_value = (_hourly(3, 0.03), _hourly(4, 0.05))
+    await coordinator._async_settle_costs()
+    await hass.async_block_till_done()
+
+    # Supply 80¢ + distribution 6¢ * 20 kWh = 120¢ -> $2.00 total.
+    cost = hass.states.get("sensor.comed_ev_charging_last_session_cost")
+    assert float(cost.state) == pytest.approx(2.00)
+    assert cost.attributes["cents_per_kwh"] == pytest.approx(10.0)
+    assert cost.attributes["supply_cost"] == pytest.approx(0.80)
+    assert cost.attributes["distribution_cost"] == pytest.approx(1.20)
+
+    # Savings unchanged: baseline 10¢ vs settled supply 4¢ = $1.20.
+    savings = hass.states.get("sensor.comed_ev_charging_last_session_savings")
+    assert float(savings.state) == pytest.approx(1.20)

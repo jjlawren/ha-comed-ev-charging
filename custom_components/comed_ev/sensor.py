@@ -71,8 +71,29 @@ def _charge_cost_attrs(data: ComEdData) -> Mapping[str, Any]:
     }
 
 
+def _last_session_attrs(data: ComEdData) -> Mapping[str, Any]:
+    session = data.last_session
+    total = data.last_session_cost
+    if session is None or session.settled_cost_cents is None or total is None:
+        return {}
+    supply = session.settled_cost_cents / 100.0
+    return {
+        "energy_kwh": round(session.energy_kwh, 2),
+        "cents_per_kwh": round(total * 100.0 / session.energy_kwh, 2),
+        "supply_cost": round(supply, 2),
+        "distribution_cost": round(total - supply, 2),
+        "energy_source": session.energy_source,
+        "started": session.started_utc.isoformat(),
+        "ended": session.ended_utc.isoformat(),
+    }
+
+
 def _has_departure(coordinator: ComEdCoordinator) -> bool:
     return coordinator._departure_entity is not None
+
+
+def _has_flat_rate(coordinator: ComEdCoordinator) -> bool:
+    return coordinator._flat_rate() is not None
 
 
 def _has_energy_meters(coordinator: ComEdCoordinator) -> bool:
@@ -178,6 +199,22 @@ SENSORS: tuple[ComEdSensorDescription, ...] = (
         suggested_display_precision=3,
         available_fn=_has_energy_meters,
         value_fn=lambda d: d.measured_efficiency,
+    ),
+    ComEdSensorDescription(
+        key="last_session_cost",
+        translation_key="last_session_cost",
+        native_unit_of_measurement=DOLLARS,
+        suggested_display_precision=2,
+        value_fn=lambda d: d.last_session_cost,
+        attrs_fn=_last_session_attrs,
+    ),
+    ComEdSensorDescription(
+        key="last_session_savings",
+        translation_key="last_session_savings",
+        native_unit_of_measurement=DOLLARS,
+        suggested_display_precision=2,
+        available_fn=_has_flat_rate,
+        value_fn=lambda d: d.last_session_savings,
     ),
 )
 

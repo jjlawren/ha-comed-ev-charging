@@ -20,6 +20,20 @@ def auto_enable_custom_integrations(enable_custom_integrations):
     yield
 
 
+@pytest.fixture(autouse=True)
+async def _unload_entries(hass):
+    """Unload any entry after each test so entry-scoped background tasks (the
+    settled-cost pass) are cancelled before the hass config dir is torn down."""
+    yield
+    from homeassistant.config_entries import ConfigEntryState
+
+    from custom_components.comed_ev.const import DOMAIN
+
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        if entry.state is ConfigEntryState.LOADED:
+            await hass.config_entries.async_unload(entry.entry_id)
+
+
 def _sample_points() -> tuple[PricePoint, ...]:
     base = datetime(2026, 8, 19, 3, 0, tzinfo=CENTRAL)
     from datetime import timedelta

@@ -26,6 +26,10 @@ CONF_FLOOR_PCT = "floor_pct"
 CONF_CEILING_PCT = "ceiling_pct"
 CONF_WINDOW_DAYS = "window_days"
 CONF_POLL_INTERVAL = "poll_interval"
+# Flat ¢/kWh baseline for session savings; unset = no savings comparison.
+CONF_FLAT_RATE = "flat_rate"
+# Fixed distribution ¢/kWh added to the settled supply rate for actual cost.
+CONF_DISTRIBUTION_RATE = "distribution_rate"
 
 # --- Threshold modes ---------------------------------------------------------
 MODE_AUTO = "auto"
@@ -58,6 +62,10 @@ DEFAULT_PRICE_CEILING = 14.0
 # --- Storage -----------------------------------------------------------------
 STORAGE_VERSION = 1
 STORAGE_KEY = "comed_ev.history"
+# Dedicated SQLite file (under HA's .storage) for durable session-cost records.
+SESSION_DB_FILENAME = "comed_ev_sessions.db"
+# How often to backfill settled prices and recompute session costs (seconds).
+SETTLE_INTERVAL_SECONDS = 86400
 
 # Fetch the heavier hourly-estimate feeds at most this often (seconds).
 HOURLY_FEED_INTERVAL = 3600

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from functools import partial
 import logging
 
 from comed_hourly_pricing import Client
@@ -12,7 +13,10 @@ from comed_hourly_pricing.const import CENTRAL
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import (
+    async_track_state_change_event,
+    async_track_time_interval,
+)
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
@@ -29,9 +33,11 @@ from .const import (
     CONF_CHARGE_RATE_KW,
     CONF_CURRENT_SOC_ENTITY,
     CONF_DEPARTURE_ENTITY,
+    CONF_DISTRIBUTION_RATE,
     CONF_EFFICIENCY,
     CONF_ENERGY_EVSE_ENTITY,
     CONF_ENERGY_VEHICLE_ENTITY,
+    CONF_FLAT_RATE,
     CONF_FLOOR_PCT,
     CONF_GAMMA,
     CONF_MIN_SOC,
@@ -59,6 +65,8 @@ from .const import (
     MODE_AUTO,
     NEXT_DAY_PUBLISH_HOUR,
     OVERNIGHT_END_HOUR,
+    SESSION_DB_FILENAME,
+    SETTLE_INTERVAL_SECONDS,
     STORAGE_KEY,
     STORAGE_VERSION,
 )
@@ -69,9 +77,11 @@ from .optimizer import (
     build_forecast,
     energy_needed_kwh,
     estimate_charge_cost,
+    hour_buckets,
     plan_charge,
     should_charge_now,
 )
+from .session_store import Session, SessionStore
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -96,6 +106,27 @@ class ComEdData:
     # Estimated cost of the upcoming charge, None until a forecast is available.
     charge_cost: ChargeCost | None = None
     forecast: dict[datetime, ForecastHour] = field(default_factory=dict)
+    # Most recent fully-settled session, None until one has settled.
+    last_session: Session | None = None
+    # Actual cost ($) of that session: settled supply + distribution, None
+    # until the session has a settled supply cost.
+    last_session_cost: float | None = None
+    # Savings ($) of that session vs. the flat-rate baseline, None when the
+    # baseline is unset or the session has no settled cost.
+    last_session_savings: float | None = None
+
+
+@dataclass
+class _OpenSession:
+    """An in-progress charge session, tracked in memory until it ends.
+
+    `wall_kwh` accumulates the EVSE (wall) meter advance for the run; it is 0.0
+    when no wall meter is configured, and the SOC fallback is used at close.
+    """
+
+    started_utc: datetime
+    start_soc: float | None
+    wall_kwh: float = 0.0
 
 
 class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
@@ -133,11 +164,27 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
         self._day_ahead: dict[datetime, float] = {}
         self._dual_today: dict[datetime, float] = {}
         self._unsub_state: list = []
+        # Durable per-session cost store, and in-flight session tracking.
+        self._session_store = SessionStore(
+            hass.config.path(".storage", SESSION_DB_FILENAME)
+        )
+        # None until the first decision is observed; guards Option-A dropping of
+        # a session already in progress when the process (re)starts.
+        self._prev_charging: bool | None = None
+        self._session: _OpenSession | None = None
+        # Cached most-recent settled session, refreshed by the settle pass.
+        self._last_session: Session | None = None
+        # Whether the one-time startup settle pass has run.
+        self._settled_once = False
 
     # --- lifecycle -----------------------------------------------------------
 
     async def async_setup(self) -> None:
         """Load persisted history and subscribe to input-entity changes."""
+        await self.hass.async_add_executor_job(self._session_store.setup)
+        self._last_session = await self.hass.async_add_executor_job(
+            self._session_store.get_last_settled_session
+        )
         stored = await self._store.async_load()
         # Legacy stores held the bare history list; newer ones wrap it in a dict.
         history_raw = stored.get("history") if isinstance(stored, dict) else stored
@@ -195,6 +242,23 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
             self.config_entry.async_create_background_task(
                 self.hass, self._async_backfill(), "comed_ev_backfill"
             )
+
+        # Backfill settled prices daily; the first pass runs inline on the first
+        # update tick (see _async_update_data) so no task outlives a teardown.
+        self._unsub_state.append(
+            async_track_time_interval(
+                self.hass,
+                self._handle_settle_timer,
+                timedelta(seconds=SETTLE_INTERVAL_SECONDS),
+            )
+        )
+
+    @callback
+    def _handle_settle_timer(self, _now: datetime) -> None:
+        """Kick the settled-cost backfill off the timer thread."""
+        self.config_entry.async_create_background_task(
+            self.hass, self._async_settle_costs(), "comed_ev_settle"
+        )
 
     def _needs_backfill(self) -> bool:
         """True when stored history covers too little of the window to skip seeding."""
@@ -276,7 +340,15 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
         self._maybe_recompute_suggestion(now)
         await self._store.async_save(self._serialize_state())
 
-        return self._build_data()
+        data = self._build_data()
+        await self._update_session(data, now)
+        if not self._settled_once:
+            # Run the startup settle inline on the first tick so it is awaited by
+            # first_refresh and never lingers past teardown.
+            self._settled_once = True
+            await self._async_settle_costs()
+            data = self._build_data()
+        return data
 
     def _build_data(self) -> ComEdData:
         """Assemble a ComEdData from current inputs and the latest prices."""
@@ -366,7 +438,224 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
             energy_needed_kwh=energy_needed,
             charge_cost=charge_cost,
             forecast=forecast,
+            last_session=self._last_session,
+            last_session_cost=self._session_total_cost(self._last_session),
+            last_session_savings=self._session_savings(self._last_session),
         )
+
+    def _flat_rate(self) -> float | None:
+        """Flat ¢/kWh baseline for savings, or None when unset."""
+        return self.config_entry.options.get(CONF_FLAT_RATE)
+
+    def _distribution_rate(self) -> float:
+        """Fixed distribution ¢/kWh added to settled supply, 0 when unset."""
+        return self.config_entry.options.get(CONF_DISTRIBUTION_RATE) or 0.0
+
+    def _session_total_cost(self, session: Session | None) -> float | None:
+        """Actual cost ($) of a settled session: supply + distribution."""
+        if session is None or session.settled_cost_cents is None:
+            return None
+        dist_cents = self._distribution_rate() * session.energy_kwh
+        return (session.settled_cost_cents + dist_cents) / 100.0
+
+    async def async_get_sessions(
+        self, start_utc: datetime | None = None, end_utc: datetime | None = None
+    ) -> list[dict]:
+        """Return serialized session rows for the get_sessions service."""
+        sessions = await self.hass.async_add_executor_job(
+            partial(
+                self._session_store.list_sessions,
+                start_utc=start_utc,
+                end_utc=end_utc,
+            )
+        )
+        return [self._session_to_dict(s) for s in sessions]
+
+    def _session_to_dict(self, session: Session) -> dict:
+        """Serialize a session for service output, with derived cost fields."""
+        supply_cost = (
+            session.settled_cost_cents / 100.0
+            if session.settled_cost_cents is not None
+            else None
+        )
+        total_cost = self._session_total_cost(session)
+        dist_cost = (
+            round(self._distribution_rate() * session.energy_kwh / 100.0, 4)
+            if session.settled_cost_cents is not None
+            else None
+        )
+        cents_per_kwh = (
+            round(total_cost * 100.0 / session.energy_kwh, 2)
+            if total_cost is not None and session.energy_kwh
+            else None
+        )
+        return {
+            "id": session.id,
+            "started": session.started_utc.isoformat(),
+            "ended": session.ended_utc.isoformat(),
+            "energy_kwh": round(session.energy_kwh, 3),
+            "energy_source": session.energy_source,
+            "start_soc": session.start_soc,
+            "end_soc": session.end_soc,
+            "supply_cost": supply_cost,
+            "distribution_cost": dist_cost,
+            "total_cost": total_cost,
+            "cents_per_kwh": cents_per_kwh,
+            "settled_complete": session.settled_complete,
+            "savings": self._session_savings(session),
+        }
+
+    def _session_savings(self, session: Session | None) -> float | None:
+        """Savings ($) of a settled session vs. the flat-rate baseline."""
+        flat = self._flat_rate()
+        if session is None or session.settled_cost_cents is None or flat is None:
+            return None
+        baseline_cents = flat * session.energy_kwh
+        return (baseline_cents - session.settled_cost_cents) / 100.0
+
+    # --- session tracking ----------------------------------------------------
+
+    async def _update_session(self, data: ComEdData, now: datetime) -> None:
+        """Detect charge_now edges and record a session row when one ends.
+
+        Option A for restart handling: a session already in progress when this
+        process starts (charging observed before any rising edge) is dropped, so
+        every recorded row spans a full run this process actually saw.
+        """
+        charging = bool(data.decision and data.decision.charge_now)
+        if self._prev_charging is None:
+            # First observation this process; adopt no in-flight session.
+            if charging:
+                _LOGGER.debug(
+                    "charge_now already on at startup; dropping straddling session"
+                )
+            self._prev_charging = charging
+            return
+
+        if charging and not self._prev_charging:
+            self._session = _OpenSession(
+                started_utc=now,
+                start_soc=self._get_float(
+                    self.config_entry.data.get(CONF_CURRENT_SOC_ENTITY)
+                ),
+            )
+        elif not charging and self._prev_charging and self._session is not None:
+            await self._close_session(now)
+            self._session = None
+        self._prev_charging = charging
+
+    async def _close_session(self, now: datetime) -> None:
+        """Compute a finished session's energy and persist it."""
+        session = self._session
+        assert session is not None
+        end_soc = self._get_float(self.config_entry.data.get(CONF_CURRENT_SOC_ENTITY))
+        energy_kwh, source = self._session_energy(session, end_soc)
+        if energy_kwh <= 0:
+            _LOGGER.debug("session closed with no measurable energy; not recording")
+            return
+        await self.hass.async_add_executor_job(
+            partial(
+                self._session_store.insert_session,
+                started_utc=session.started_utc,
+                ended_utc=now,
+                energy_kwh=energy_kwh,
+                energy_source=source,
+                start_soc=session.start_soc,
+                end_soc=end_soc,
+            )
+        )
+        _LOGGER.debug(
+            "recorded session: %.2f kWh (%s) over %s",
+            energy_kwh,
+            source,
+            now - session.started_utc,
+        )
+
+    def _session_energy(
+        self, session: _OpenSession, end_soc: float | None
+    ) -> tuple[float, str]:
+        """Return (wall_kwh, source) for a finished session.
+
+        Prefer the accumulated EVSE (wall) meter advance; otherwise derive wall
+        energy from the SOC rise using the same formula as `energy_needed_kwh`.
+        """
+        if self._energy_evse_entity and session.wall_kwh > 0:
+            return session.wall_kwh, "meter"
+        if session.start_soc is not None and end_soc is not None and end_soc > session.start_soc:
+            efficiency = self._measured_efficiency()
+            if efficiency is None:
+                efficiency = self.config_entry.data.get(
+                    CONF_EFFICIENCY, DEFAULT_EFFICIENCY
+                )
+            wall = energy_needed_kwh(
+                session.start_soc, end_soc, self._capacity_kwh(), efficiency
+            )
+            return wall, "soc"
+        return 0.0, "soc"
+
+    async def _async_settle_costs(self) -> None:
+        """Backfill settled prices and recompute cost for now-settled sessions."""
+        incomplete = await self.hass.async_add_executor_job(
+            self._session_store.sessions_incomplete
+        )
+        if not incomplete:
+            return
+
+        # Every hour-ending any incomplete session touches.
+        needed: set[datetime] = set()
+        for session in incomplete:
+            needed |= hour_buckets(session.started_utc, session.ended_utc).keys()
+
+        have = await self.hass.async_add_executor_job(
+            self._session_store.get_settled_prices, needed
+        )
+        # ComEd's dual feed is per Central calendar day; fetch each missing day.
+        missing_days = sorted(
+            {hour.astimezone(CENTRAL).date() for hour in needed - have.keys()}
+        )
+        for day in missing_days:
+            try:
+                dual = await self._client.get_dual(day)
+            except Exception as err:  # noqa: BLE001 - settle pass is best-effort
+                _LOGGER.warning("ComEd settled feed for %s failed: %s", day, err)
+                continue
+            prices = {
+                dt_util.as_utc(h.hour_ending): h.actual * 100.0
+                for h in dual
+                if h.actual is not None
+            }
+            if prices:
+                await self.hass.async_add_executor_job(
+                    self._session_store.upsert_settled_prices, prices
+                )
+
+        # Recompute any session whose hours are now fully settled.
+        prices = await self.hass.async_add_executor_job(
+            self._session_store.get_settled_prices, needed
+        )
+        for session in incomplete:
+            buckets = hour_buckets(session.started_utc, session.ended_utc)
+            if buckets and all(hour in prices for hour in buckets):
+                cost_cents = sum(
+                    session.energy_kwh * fraction * prices[hour]
+                    for hour, fraction in buckets.items()
+                )
+                await self.hass.async_add_executor_job(
+                    self._session_store.update_session_cost,
+                    session.id,
+                    cost_cents,
+                    True,
+                )
+                _LOGGER.debug(
+                    "settled session %d: %.1f¢", session.id, cost_cents
+                )
+
+        # Refresh the cached last-settled session and push it to entities.
+        self._last_session = await self.hass.async_add_executor_job(
+            self._session_store.get_last_settled_session
+        )
+        if self.data is not None:
+            self.async_set_updated_data(self._build_data())
 
     def _overnight_end(self, now: datetime) -> datetime:
         """Return the next OVERNIGHT_END_HOUR (Central) as a UTC datetime."""
@@ -440,7 +729,11 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
         """Decay the running totals, then add each meter's positive advance."""
         self._decay_energy(dt_util.utcnow())
         self._energy_vehicle_total += self._meter_delta(self._energy_vehicle_entity)
-        self._energy_evse_total += self._meter_delta(self._energy_evse_entity)
+        evse_delta = self._meter_delta(self._energy_evse_entity)
+        self._energy_evse_total += evse_delta
+        # Attribute wall energy to the open session so its cost is meter-derived.
+        if self._session is not None:
+            self._session.wall_kwh += evse_delta
 
     def _decay_energy(self, now: datetime) -> None:
         """Shrink both totals for the time elapsed so new deltas weigh more.

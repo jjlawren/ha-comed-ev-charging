@@ -24,9 +24,11 @@ from .const import (
     CONF_CHARGE_RATE_KW,
     CONF_CURRENT_SOC_ENTITY,
     CONF_DEPARTURE_ENTITY,
+    CONF_DISTRIBUTION_RATE,
     CONF_EFFICIENCY,
     CONF_ENERGY_EVSE_ENTITY,
     CONF_ENERGY_VEHICLE_ENTITY,
+    CONF_FLAT_RATE,
     CONF_FLOOR_PCT,
     CONF_GAMMA,
     CONF_MIN_SOC,
@@ -247,6 +249,16 @@ class ComEdOptionsFlow(OptionsFlow):
                     CONF_POLL_INTERVAL,
                     default=opts.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL),
                 ): _number(1, 60, 1, "min"),
+                vol.Optional(
+                    CONF_FLAT_RATE,
+                    description={"suggested_value": opts.get(CONF_FLAT_RATE)},
+                ): _number(0, 100, 0.1, "¢/kWh"),
+                vol.Optional(
+                    CONF_DISTRIBUTION_RATE,
+                    description={
+                        "suggested_value": opts.get(CONF_DISTRIBUTION_RATE)
+                    },
+                ): _number(0, 100, 0.1, "¢/kWh"),
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

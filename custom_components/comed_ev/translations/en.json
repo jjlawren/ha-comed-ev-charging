@@ -41,7 +41,9 @@
           "floor_pct": "Floor percentile",
           "ceiling_pct": "Ceiling percentile",
           "window_days": "History window (days)",
-          "poll_interval": "Poll interval (minutes)"
+          "poll_interval": "Poll interval (minutes)",
+          "flat_rate": "Flat-rate baseline for savings (¢/kWh, optional)",
+          "distribution_rate": "Distribution charge added to actual cost (¢/kWh, optional)"
         }
       }
     }
@@ -65,10 +67,28 @@
       "energy_needed": { "name": "Energy needed to target" },
       "estimated_charge_cost": { "name": "Estimated charge cost" },
       "charge_avg_price": { "name": "Estimated charge average price" },
-      "measured_efficiency": { "name": "Measured efficiency" }
+      "measured_efficiency": { "name": "Measured efficiency" },
+      "last_session_cost": { "name": "Last session cost" },
+      "last_session_savings": { "name": "Last session savings" }
     },
     "binary_sensor": {
       "charge_now": { "name": "Charge now" }
+    }
+  },
+  "services": {
+    "get_sessions": {
+      "name": "Get sessions",
+      "description": "Return recorded charge sessions with their settled cost and savings.",
+      "fields": {
+        "start": {
+          "name": "Start",
+          "description": "Only return sessions ending on or after this time."
+        },
+        "end": {
+          "name": "End",
+          "description": "Only return sessions starting on or before this time."
+        }
+      }
     }
   }
 }
