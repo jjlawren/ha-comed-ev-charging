@@ -53,7 +53,7 @@
     "number": {
       "price_floor": { "name": "Price floor" },
       "price_ceiling": { "name": "Price ceiling" },
-      "min_soc": { "name": "Urgency-full SOC" },
+      "min_soc": { "name": "Max-urgency SOC" },
       "gamma": { "name": "Curve steepness (gamma)" },
       "floor_pct": { "name": "Floor percentile" },
       "ceiling_pct": { "name": "Ceiling percentile" },

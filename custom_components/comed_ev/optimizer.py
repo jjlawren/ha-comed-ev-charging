@@ -32,6 +32,18 @@ def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
+def soc_urgency(current_soc: float, target_soc: float, min_soc: float = 0.0) -> float:
+    """Return charging urgency in [0, 1] from SOC alone.
+
+    0.0 at (or above) target, rising linearly to 1.0 at `min_soc` and below. This
+    is the pre-`gamma` driver of `charge_threshold`.
+    """
+    span = target_soc - min_soc
+    if span <= 0:
+        return 1.0
+    return clamp((target_soc - current_soc) / span, 0.0, 1.0)
+
+
 def charge_threshold(
     current_soc: float,
     target_soc: float,
@@ -51,8 +63,7 @@ def charge_threshold(
     """
     if current_soc >= target_soc:
         return 0.0
-    span = target_soc - min_soc
-    urgency = 1.0 if span <= 0 else clamp((target_soc - current_soc) / span, 0.0, 1.0)
+    urgency = soc_urgency(current_soc, target_soc, min_soc)
     return price_floor + (price_ceiling - price_floor) * urgency**gamma
 
 
@@ -190,6 +201,8 @@ class ChargeDecision:
     reason: str
     decision_price: float
     threshold: float
+    urgency: float
+    gamma: float
     plan: ChargePlan | None = None
 
 
@@ -219,6 +232,7 @@ def should_charge_now(
       4. else                              -> off  (above_threshold)
     """
     del now  # part of the documented signature; decision uses `plan` for time context
+    urgency = soc_urgency(current_soc, target_soc, min_soc)
     threshold = charge_threshold(
         current_soc,
         target_soc,
@@ -229,16 +243,18 @@ def should_charge_now(
     )
     if current_soc >= target_soc:
         return ChargeDecision(
-            False, REASON_TARGET_REACHED, decision_price, threshold, plan
+            False, REASON_TARGET_REACHED, decision_price, threshold, urgency, gamma, plan
         )
     if plan is not None and plan.slack_hours <= 0:
-        return ChargeDecision(True, REASON_MUST_CHARGE, decision_price, threshold, plan)
+        return ChargeDecision(
+            True, REASON_MUST_CHARGE, decision_price, threshold, urgency, gamma, plan
+        )
     if decision_price < threshold:
         return ChargeDecision(
-            True, REASON_BELOW_THRESHOLD, decision_price, threshold, plan
+            True, REASON_BELOW_THRESHOLD, decision_price, threshold, urgency, gamma, plan
         )
     return ChargeDecision(
-        False, REASON_ABOVE_THRESHOLD, decision_price, threshold, plan
+        False, REASON_ABOVE_THRESHOLD, decision_price, threshold, urgency, gamma, plan
     )
 
 

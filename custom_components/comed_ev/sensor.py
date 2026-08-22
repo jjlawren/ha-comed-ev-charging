@@ -43,6 +43,8 @@ def _threshold_attrs(data: ComEdData) -> Mapping[str, Any]:
     }
     if d is not None:
         attrs["threshold"] = round(d.threshold, 2)
+        attrs["urgency"] = round(d.urgency, 3)
+        attrs["gamma"] = d.gamma
     return attrs
 
 
@@ -130,6 +132,7 @@ SENSORS: tuple[ComEdSensorDescription, ...] = (
         key="suggested_floor",
         translation_key="suggested_floor",
         native_unit_of_measurement=CENTS,
+        entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
         suggested_display_precision=2,
         value_fn=lambda d: d.suggestion.price_floor,
@@ -142,6 +145,7 @@ SENSORS: tuple[ComEdSensorDescription, ...] = (
         key="suggested_ceiling",
         translation_key="suggested_ceiling",
         native_unit_of_measurement=CENTS,
+        entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
         suggested_display_precision=2,
         value_fn=lambda d: d.suggestion.price_ceiling,
@@ -154,6 +158,7 @@ SENSORS: tuple[ComEdSensorDescription, ...] = (
         key="projected_end_soc",
         translation_key="projected_end_soc",
         native_unit_of_measurement="%",
+        entity_category=EntityCategory.DIAGNOSTIC,
         device_class=SensorDeviceClass.BATTERY,
         suggested_display_precision=1,
         available_fn=_has_departure,
@@ -168,6 +173,7 @@ SENSORS: tuple[ComEdSensorDescription, ...] = (
         key="energy_needed",
         translation_key="energy_needed",
         native_unit_of_measurement="kWh",
+        entity_category=EntityCategory.DIAGNOSTIC,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=2,
         value_fn=lambda d: d.energy_needed_kwh,

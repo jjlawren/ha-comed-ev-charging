@@ -323,7 +323,12 @@ def _decision_data(coordinator, charge_now: bool):
         live_price=4.0,
         hourly_price=4.0,
         decision=ChargeDecision(
-            charge_now=charge_now, reason="", decision_price=4.0, threshold=5.0
+            charge_now=charge_now,
+            reason="",
+            decision_price=4.0,
+            threshold=5.0,
+            urgency=0.5,
+            gamma=2.5,
         ),
         suggestion=coordinator._suggestion,
         effective_floor=3.0,
