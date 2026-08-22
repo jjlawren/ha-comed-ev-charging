@@ -49,8 +49,24 @@ so the starting point is still data-driven.
 | `sensor.comed_ev_estimated_charge_average_price` | Estimated average $/kWh for that charge. |
 | `sensor.comed_ev_suggested_floor` / `_ceiling` | Analytics recommendations (disabled by default). |
 | `sensor.comed_ev_measured_efficiency` | Measured vehicle/wall ratio when energy meters are set (diagnostic). |
+| `sensor.comed_ev_last_session_cost` | Actual cost ($) of the last charge session: ComEd settled *supply* prices plus the fixed distribution rate. Attributes: `energy_kwh`, `cents_per_kwh` (effective), `supply_cost`, `distribution_cost`, `energy_source` (`meter`/`soc`), `started`, `ended`. |
+| `sensor.comed_ev_last_session_savings` | Savings ($) of that session vs. the flat-rate baseline. Only present when a flat rate is set in options. |
 
 `reason` is one of `below_threshold`, `above_threshold`, `target_reached`, `must_charge`.
+
+## Session cost reporting
+
+Each charge session (a contiguous `charge_now == on` run) is recorded to an
+integration-owned SQLite store. Energy comes from the EVSE (wall) meter when set,
+otherwise from the SOC rise. A daily pass prices each session at ComEd's *settled*
+hourly prices once they publish. The ComEd feed is **supply-only**, so set the fixed
+**distribution rate** (¢/kWh) in the options to have it added to each session's actual
+cost. Set a flat-rate baseline (¢/kWh) to also get per-session savings — savings
+compares supply only, since distribution is billed the same on any plan.
+
+The `comed_ev.get_sessions` service returns the recorded sessions (optional `start`/
+`end` bounds) with energy, settled cost, ¢/kWh, and savings — use it for reports or
+automations.
 
 ## Installation
 
@@ -100,7 +116,8 @@ automation:
 
 Reconfigurable from the integration's **Configure** button: threshold mode and Manual
 floor/ceiling, `min_soc` and `gamma` (curve steepness), analytics percentiles and
-history window, and the poll interval.
+history window, the poll interval, and the flat-rate and distribution ¢/kWh rates
+used for session-cost reporting.
 
 ## History & analysis
 
