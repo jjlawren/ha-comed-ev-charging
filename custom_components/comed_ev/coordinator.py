@@ -353,15 +353,28 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
         _LOGGER.debug("ComEd backfill added %d points", len(collected))
 
     @callback
+    def _publish(self) -> None:
+        """Rebuild data and notify entities WITHOUT resetting the poll clock.
+
+        async_set_updated_data() cancels and reschedules the update_interval
+        timer. Calling it from frequently-firing external triggers (input/energy
+        state changes) perpetually pushes the next API poll into the future, so
+        the feeds never refresh on their own. async_update_listeners() publishes
+        the new decision data to entities and leaves the poll schedule intact.
+        """
+        self.data = self._build_data()
+        self.async_update_listeners()
+
+    @callback
     def _handle_input_change(self, _event: Event) -> None:
         """Recompute immediately when an input entity changes."""
-        self.async_set_updated_data(self._build_data())
+        self._publish()
 
     @callback
     def _handle_energy_change(self, _event: Event) -> None:
         """Accumulate meter advance and recompute measured efficiency."""
         self._accumulate_energy()
-        self.async_set_updated_data(self._build_data())
+        self._publish()
 
     async def async_shutdown(self) -> None:
         """Unsubscribe listeners and flush history on unload."""
@@ -385,7 +398,7 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
             self._last_suggest_day = None
             self._maybe_recompute_suggestion(dt_util.utcnow())
         await self._store.async_save(self._serialize_state())
-        self.async_set_updated_data(self._build_data())
+        self._publish()
 
     # --- main update ---------------------------------------------------------
 

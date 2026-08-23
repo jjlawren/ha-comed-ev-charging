@@ -195,6 +195,45 @@ async def test_measured_efficiency_from_energy_meters(
     assert round(float(eff.state), 3) == round(10.0 / 11.1, 3)
 
 
+async def test_diagnostics_reports_energy_totals(
+    hass: HomeAssistant, mock_client
+) -> None:
+    """Diagnostics exposes the running meter totals and the raw ratio."""
+    from custom_components.comed_ev.diagnostics import (
+        async_get_config_entry_diagnostics,
+    )
+
+    hass.states.async_set("sensor.ev_soc", "20")
+    hass.states.async_set("number.ev_target", "80")
+    hass.states.async_set("sensor.ev_delivered", "0")
+    hass.states.async_set("sensor.evse_drawn", "0")
+
+    entry = _entry(
+        {
+            CONF_ENERGY_VEHICLE_ENTITY: "sensor.ev_delivered",
+            CONF_ENERGY_EVSE_ENTITY: "sensor.evse_drawn",
+        }
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    hass.states.async_set("sensor.ev_delivered", "10.0")
+    hass.states.async_set("sensor.evse_drawn", "11.1")
+    await hass.async_block_till_done()
+
+    diag = await async_get_config_entry_diagnostics(hass, entry)
+    energy = diag["energy"]
+    assert energy["vehicle_entity"] == "sensor.ev_delivered"
+    assert energy["evse_entity"] == "sensor.evse_drawn"
+    assert energy["vehicle_total_kwh"] == pytest.approx(10.0)
+    assert energy["evse_total_kwh"] == pytest.approx(11.1)
+    assert energy["raw_ratio"] == pytest.approx(10.0 / 11.1)
+    assert energy["measured_efficiency"] == pytest.approx(10.0 / 11.1)
+    assert energy["min_sample_kwh"] == 2.0
+    assert energy["accepted_ratio_range"] == [0.5, 1.0]
+
+
 async def test_meter_reset_is_ignored(hass: HomeAssistant, mock_client) -> None:
     """A counter reset does not subtract from the accumulated totals."""
     hass.states.async_set("sensor.ev_soc", "20")
@@ -309,6 +348,39 @@ async def test_target_reached_turns_off(hass: HomeAssistant, mock_client) -> Non
     charge = hass.states.get("binary_sensor.comed_ev_charging_charge_now")
     assert charge.state == "off"
     assert charge.attributes["reason"] == "target_reached"
+
+
+async def test_input_change_does_not_reset_poll_clock(
+    hass: HomeAssistant, mock_client
+) -> None:
+    """An input state change republishes data but must not reschedule the poll.
+
+    Regression: the handlers called async_set_updated_data(), which cancels and
+    reschedules the update_interval timer. Frequently-updating inputs then kept
+    pushing the next API poll into the future, so the feeds only refreshed on a
+    reload. Publishing via async_update_listeners() leaves the poll intact.
+    """
+    hass.states.async_set("sensor.ev_soc", "20")
+    hass.states.async_set("number.ev_target", "80")
+
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = entry.runtime_data
+    # The periodic poll is scheduled once entities subscribe as listeners.
+    scheduled_poll = coordinator._unsub_refresh
+    assert scheduled_poll is not None
+    data_before = coordinator.data
+
+    # A watched input changes: the decision must be republished to entities...
+    hass.states.async_set("sensor.ev_soc", "30")
+    await hass.async_block_till_done()
+    assert coordinator.data is not data_before
+
+    # ...but the pending API poll must be the very same scheduled call, untouched.
+    assert coordinator._unsub_refresh is scheduled_poll
 
 
 # --- session recording (phase 2) --------------------------------------------
@@ -595,6 +667,15 @@ async def test_last_session_sensors_with_savings(
     assert savings is not None
     assert float(savings.state) == pytest.approx(1.20)
 
+    energy = hass.states.get("sensor.comed_ev_charging_last_session_energy")
+    assert energy is not None
+    assert float(energy.state) == pytest.approx(20.0)
+
+    # Supply 80¢ over 20 kWh -> 4¢/kWh supply-only effective rate.
+    rate = hass.states.get("sensor.comed_ev_charging_last_session_effective_rate")
+    assert rate is not None
+    assert float(rate.state) == pytest.approx(4.0)
+
 
 async def test_savings_sensor_unknown_without_flat_rate(
     hass: HomeAssistant, mock_client
@@ -683,6 +764,12 @@ async def test_distribution_rate_added_to_cost(
     assert cost.attributes["cents_per_kwh"] == pytest.approx(10.0)
     assert cost.attributes["supply_cost"] == pytest.approx(0.80)
     assert cost.attributes["distribution_cost"] == pytest.approx(1.20)
+
+    # Effective rate is supply-only: 80¢ over 20 kWh = 4¢/kWh, excluding
+    # the 6¢ distribution charge.
+    rate = hass.states.get("sensor.comed_ev_charging_last_session_effective_rate")
+    assert rate is not None
+    assert float(rate.state) == pytest.approx(4.0)
 
     # Savings unchanged: baseline 10¢ vs settled supply 4¢ = $1.20.
     savings = hass.states.get("sensor.comed_ev_charging_last_session_savings")

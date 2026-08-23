@@ -53,6 +53,8 @@ number entities.
 | `sensor.comed_ev_measured_efficiency` | Measured vehicle/wall ratio when energy meters are set (diagnostic). |
 | `sensor.comed_ev_last_session_cost` | Actual cost ($) of the last charge session: ComEd settled *supply* prices plus the fixed distribution rate. Attributes: `energy_kwh`, `cents_per_kwh` (effective), `supply_cost`, `distribution_cost`, `energy_source` (`meter`/`soc`), `started`, `ended`. |
 | `sensor.comed_ev_last_session_savings` | Savings ($) of that session vs. the flat-rate baseline. Only present when a flat rate is set in options. |
+| `sensor.comed_ev_last_session_energy` | Energy (kWh) delivered in the last charge session. |
+| `sensor.comed_ev_last_session_effective_rate` | Effective rate (¢/kWh) of the last session: settled cost divided by delivered energy. |
 
 `reason` is one of `below_threshold`, `above_threshold`, `target_reached`, `must_charge`.
 
