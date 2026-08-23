@@ -311,6 +311,39 @@ async def test_target_reached_turns_off(hass: HomeAssistant, mock_client) -> Non
     assert charge.attributes["reason"] == "target_reached"
 
 
+async def test_input_change_does_not_reset_poll_clock(
+    hass: HomeAssistant, mock_client
+) -> None:
+    """An input state change republishes data but must not reschedule the poll.
+
+    Regression: the handlers called async_set_updated_data(), which cancels and
+    reschedules the update_interval timer. Frequently-updating inputs then kept
+    pushing the next API poll into the future, so the feeds only refreshed on a
+    reload. Publishing via async_update_listeners() leaves the poll intact.
+    """
+    hass.states.async_set("sensor.ev_soc", "20")
+    hass.states.async_set("number.ev_target", "80")
+
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = entry.runtime_data
+    # The periodic poll is scheduled once entities subscribe as listeners.
+    scheduled_poll = coordinator._unsub_refresh
+    assert scheduled_poll is not None
+    data_before = coordinator.data
+
+    # A watched input changes: the decision must be republished to entities...
+    hass.states.async_set("sensor.ev_soc", "30")
+    await hass.async_block_till_done()
+    assert coordinator.data is not data_before
+
+    # ...but the pending API poll must be the very same scheduled call, untouched.
+    assert coordinator._unsub_refresh is scheduled_poll
+
+
 # --- session recording (phase 2) --------------------------------------------
 
 
