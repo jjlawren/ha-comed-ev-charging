@@ -63,7 +63,9 @@
       "cheapest_price_time": { "name": "Cheapest upcoming price time" },
       "measured_efficiency": { "name": "Measured efficiency" },
       "last_session_cost": { "name": "Last session cost" },
-      "last_session_savings": { "name": "Last session savings" }
+      "last_session_savings": { "name": "Last session savings" },
+      "last_session_energy": { "name": "Last session energy" },
+      "last_session_rate": { "name": "Last session effective rate" }
     },
     "binary_sensor": {
       "charge_now": { "name": "Charge now" }

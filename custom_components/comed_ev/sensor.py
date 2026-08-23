@@ -104,6 +104,18 @@ def _last_session_attrs(data: ComEdData) -> Mapping[str, Any]:
     }
 
 
+def _last_session_energy(data: ComEdData) -> float | None:
+    session = data.last_session
+    return session.energy_kwh if session is not None else None
+
+
+def _last_session_rate(data: ComEdData) -> float | None:
+    session = data.last_session
+    if session is None or session.settled_cost_cents is None or session.energy_kwh <= 0:
+        return None
+    return session.settled_cost_cents / session.energy_kwh
+
+
 def _has_departure(coordinator: ComEdCoordinator) -> bool:
     return coordinator._departure_entity is not None
 
@@ -249,6 +261,20 @@ SENSORS: tuple[ComEdSensorDescription, ...] = (
         native_unit_of_measurement=DOLLARS,
         suggested_display_precision=2,
         value_fn=lambda d: d.last_session_savings,
+    ),
+    ComEdSensorDescription(
+        key="last_session_energy",
+        translation_key="last_session_energy",
+        native_unit_of_measurement="kWh",
+        suggested_display_precision=2,
+        value_fn=_last_session_energy,
+    ),
+    ComEdSensorDescription(
+        key="last_session_rate",
+        translation_key="last_session_rate",
+        native_unit_of_measurement=CENTS,
+        suggested_display_precision=2,
+        value_fn=_last_session_rate,
     ),
 )
 

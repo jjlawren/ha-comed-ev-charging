@@ -667,6 +667,15 @@ async def test_last_session_sensors_with_savings(
     assert savings is not None
     assert float(savings.state) == pytest.approx(1.20)
 
+    energy = hass.states.get("sensor.comed_ev_charging_last_session_energy")
+    assert energy is not None
+    assert float(energy.state) == pytest.approx(20.0)
+
+    # Supply 80¢ over 20 kWh -> 4¢/kWh supply-only effective rate.
+    rate = hass.states.get("sensor.comed_ev_charging_last_session_effective_rate")
+    assert rate is not None
+    assert float(rate.state) == pytest.approx(4.0)
+
 
 async def test_savings_sensor_unknown_without_flat_rate(
     hass: HomeAssistant, mock_client
@@ -755,6 +764,12 @@ async def test_distribution_rate_added_to_cost(
     assert cost.attributes["cents_per_kwh"] == pytest.approx(10.0)
     assert cost.attributes["supply_cost"] == pytest.approx(0.80)
     assert cost.attributes["distribution_cost"] == pytest.approx(1.20)
+
+    # Effective rate is supply-only: 80¢ over 20 kWh = 4¢/kWh, excluding
+    # the 6¢ distribution charge.
+    rate = hass.states.get("sensor.comed_ev_charging_last_session_effective_rate")
+    assert rate is not None
+    assert float(rate.state) == pytest.approx(4.0)
 
     # Savings unchanged: baseline 10¢ vs settled supply 4¢ = $1.20.
     savings = hass.states.get("sensor.comed_ev_charging_last_session_savings")
