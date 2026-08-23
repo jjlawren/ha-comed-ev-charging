@@ -1,12 +1,16 @@
 {
   "domain": "comed_ev",
   "name": "ComEd EV Charging",
-  "codeowners": ["@jjlawren"],
+  "codeowners": [
+    "@jjlawren"
+  ],
   "config_flow": true,
   "documentation": "https://github.com/jjlawren/ha-comed-ev-charging",
   "integration_type": "service",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/jjlawren/ha-comed-ev-charging/issues",
-  "requirements": ["comed-hourly-pricing>=0.1.0"],
-  "version": "0.2.0"
+  "requirements": [
+    "comed-hourly-pricing>=0.1.0"
+  ],
+  "version": "0.3.0"
 }
