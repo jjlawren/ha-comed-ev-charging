@@ -195,6 +195,45 @@ async def test_measured_efficiency_from_energy_meters(
     assert round(float(eff.state), 3) == round(10.0 / 11.1, 3)
 
 
+async def test_diagnostics_reports_energy_totals(
+    hass: HomeAssistant, mock_client
+) -> None:
+    """Diagnostics exposes the running meter totals and the raw ratio."""
+    from custom_components.comed_ev.diagnostics import (
+        async_get_config_entry_diagnostics,
+    )
+
+    hass.states.async_set("sensor.ev_soc", "20")
+    hass.states.async_set("number.ev_target", "80")
+    hass.states.async_set("sensor.ev_delivered", "0")
+    hass.states.async_set("sensor.evse_drawn", "0")
+
+    entry = _entry(
+        {
+            CONF_ENERGY_VEHICLE_ENTITY: "sensor.ev_delivered",
+            CONF_ENERGY_EVSE_ENTITY: "sensor.evse_drawn",
+        }
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    hass.states.async_set("sensor.ev_delivered", "10.0")
+    hass.states.async_set("sensor.evse_drawn", "11.1")
+    await hass.async_block_till_done()
+
+    diag = await async_get_config_entry_diagnostics(hass, entry)
+    energy = diag["energy"]
+    assert energy["vehicle_entity"] == "sensor.ev_delivered"
+    assert energy["evse_entity"] == "sensor.evse_drawn"
+    assert energy["vehicle_total_kwh"] == pytest.approx(10.0)
+    assert energy["evse_total_kwh"] == pytest.approx(11.1)
+    assert energy["raw_ratio"] == pytest.approx(10.0 / 11.1)
+    assert energy["measured_efficiency"] == pytest.approx(10.0 / 11.1)
+    assert energy["min_sample_kwh"] == 2.0
+    assert energy["accepted_ratio_range"] == [0.5, 1.0]
+
+
 async def test_meter_reset_is_ignored(hass: HomeAssistant, mock_client) -> None:
     """A counter reset does not subtract from the accumulated totals."""
     hass.states.async_set("sensor.ev_soc", "20")
