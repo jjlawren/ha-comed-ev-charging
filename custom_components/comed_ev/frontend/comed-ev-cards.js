@@ -8,7 +8,9 @@
  * Plain web components, no build step. The schedule card reads the
  * `charge_schedule` sensor's `hours[]` attribute; the history card calls the
  * `comed_ev.get_sessions` service; the activity card calls
- * `comed_ev.get_transitions`, and renders the response.
+ * `comed_ev.get_transitions`, and renders the response. That response is one
+ * interleaved timeline of `kind: "edge"` charge on/off transitions and
+ * `kind: "deferral"` reserve-gate hold spans.
  */
 
 const DOMAIN = "comed_ev";
@@ -521,6 +523,30 @@ function txGauge(t) {
     </div>`;
 }
 
+// A deferral is a reserve-gate hold span (kind: "deferral"), not an edge — the
+// optimizer would charge on price but held the start off for a cheaper hour.
+function dfDuration(d) {
+  const mins = Math.max(1, Math.round((new Date(d.ended) - new Date(d.ts)) / 60000));
+  return mins >= 90 ? `${(mins / 60).toFixed(1)} h` : `${mins} min`;
+}
+function dfDescribe(d) {
+  const tail =
+    {
+      below_threshold: "then charging began",
+      above_threshold: "then the price rose past the threshold",
+      target_reached: "then the target was reached",
+    }[d.ended_reason] || "then the hold released";
+  return `Reserved cheaper hours — held ${dfDuration(d)}, ${tail}.`;
+}
+function dfPills(d) {
+  const out = [];
+  const add = (k, v, cls) =>
+    out.push(`<span class="op ${cls || ""}">${k} <b>${v}</b></span>`);
+  add("price", cents(d.decision_price), "hot");
+  if (d.min_ahead != null) add("waited for", cents(d.min_ahead), "cool");
+  return out.join("");
+}
+
 const lockSvg = `<svg class="lockicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>`;
 
 class ComEdActivityCard extends HTMLElement {
@@ -608,6 +634,22 @@ class ComEdActivityCard extends HTMLElement {
         const mode = t.mode === "deadline"
           ? `<span class="mode deadline">Deadline</span>`
           : `<span class="mode">Opportunistic</span>`;
+        if (t.kind === "deferral") {
+          parts.push(`
+            <div class="tx defer${last ? " last" : ""}">
+              <div class="rail"><span class="marker"></span></div>
+              <div class="body">
+                <div class="l1">
+                  <span class="time">${fmtClock(t.ts)}–${fmtClock(t.ended)}</span>
+                  <span class="label">Charging deferred</span>
+                  <span class="sp"></span>${mode}
+                </div>
+                <div class="why">${dfDescribe(t)}</div>
+                <div class="ops">${dfPills(t)}</div>
+              </div>
+            </div>`);
+          return;
+        }
         parts.push(`
           <div class="tx ${t.charging ? "start" : "stop"}${last ? " last" : ""}">
             <div class="rail"><span class="marker"></span></div>
@@ -642,6 +684,7 @@ class ComEdActivityCard extends HTMLElement {
     const cyclesToday = rows.filter(
       (r) => r.charging && dayLabel(r.ts) === "Today",
     ).length;
+    const edgeCount = rows.filter((r) => r.kind !== "deferral").length;
 
     this._card.innerHTML = `
       <div class="head">
@@ -656,7 +699,7 @@ class ComEdActivityCard extends HTMLElement {
       ${
         rows.length
           ? `<div class="foot">
-              <div class="stat"><span class="k">Transitions</span><span class="v">${rows.length}</span></div>
+              <div class="stat"><span class="k">Transitions</span><span class="v">${edgeCount}</span></div>
               <div class="stat"><span class="k">Cycles today</span><span class="v accent">${cyclesToday}</span></div>
               <div class="fsp"></div>
               <div class="stat" style="text-align:right"><span class="k">Last change</span><span class="v">${relTime(rows[0].ts)}</span></div>
@@ -696,6 +739,12 @@ const ACTIVITY_CSS = `
     background: var(--card-background-color, var(--ha-card-background, #fff));
     border: 2.5px solid ${WARM};
   }
+  .tx.defer .marker {
+    background: var(--card-background-color, var(--ha-card-background, #fff));
+    border: 2px dashed ${CHARGE};
+  }
+  .tx.defer .label { color: ${CHARGE}; }
+  .tx.defer .body { opacity: .92; }
   .body { padding: 7px 0 10px; min-width: 0; border-bottom: 1px solid var(--divider-color); }
   .tx.last .body { border-bottom: none; }
   .l1 { display: flex; align-items: center; gap: 8px; }

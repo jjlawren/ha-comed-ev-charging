@@ -94,6 +94,22 @@ TRANSITION_RETENTION = 500
 # How many recent transitions the diagnostics dump surfaces.
 DIAGNOSTICS_TRANSITIONS = 20
 
+# --- Charge deferrals --------------------------------------------------------
+# A deferral is a contiguous hold where the optimizer would charge on price but
+# the reserve gate (cheaper_later) held the start off to reach a cheaper hour. It
+# never flips charge_now, so it leaves no transition edge. One row per episode is
+# recorded, written on close — never per poll — so the per-tick price wobble
+# inside a hold produces no rows. Two damps keep it quiet:
+#   - A hold shorter than this (seconds) is dropped at close, so a sub-poll flap
+#     never lands a row.
+DEFERRAL_MIN_DURATION_SECONDS = 900
+#   - After the hold ends, wait this long (seconds) confirming it stays ended
+#     before finalizing; a re-assertion inside the window keeps it one episode.
+#     Damps the cheaper_hours_ahead boundary wobble so one hold is not split.
+DEFERRAL_GRACE_SECONDS = 900
+# Rows of deferral history kept in SQLite; older rows are pruned on insert.
+DEFERRAL_RETENTION = 500
+
 # --- Storage -----------------------------------------------------------------
 STORAGE_VERSION = 1
 STORAGE_KEY = "comed_ev.history"

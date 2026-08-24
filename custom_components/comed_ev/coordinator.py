@@ -65,6 +65,9 @@ from .const import (
     DEFAULT_PRICE_FLOOR,
     DEFAULT_THRESHOLD_MODE,
     DEFAULT_WINDOW_DAYS,
+    DEFERRAL_GRACE_SECONDS,
+    DEFERRAL_MIN_DURATION_SECONDS,
+    DEFERRAL_RETENTION,
     EFFICIENCY_MAX,
     EFFICIENCY_MIN,
     EFFICIENCY_MIN_SAMPLE_KWH,
@@ -87,6 +90,7 @@ from .const import (
 from .optimizer import (
     MODE_DEADLINE,
     MODE_OPPORTUNISTIC,
+    REASON_CHEAPER_LATER,
     REASON_MIN_OFF_LOCKOUT,
     ChargeCost,
     ChargeDecision,
@@ -104,6 +108,13 @@ from .optimizer import (
 from .session_store import Session, SessionStore
 
 _LOGGER = logging.getLogger(__name__)
+
+# Decision reasons that count as a reserve-gate deferral: the optimizer would
+# charge on price but held the start off to reach a cheaper hour. Scoped to
+# `cheaper_later` for now — `min_off_lockout` is already surfaced on the start it
+# delays (the Activity card's "held N min" note), so recording it too would
+# double-count.
+_DEFERRAL_REASONS = frozenset({REASON_CHEAPER_LATER})
 
 type ComEdConfigEntry = ConfigEntry[ComEdCoordinator]
 
@@ -196,6 +207,30 @@ class _OpenSession:
     wall_kwh: float = 0.0
 
 
+@dataclass
+class _OpenDeferral:
+    """An in-progress reserve-gate deferral episode, tracked in memory.
+
+    Opened when the reserve gate first holds a would-be charge off; finalized to
+    one DB row once the hold has ended and stayed ended for the grace window. Only
+    the entry operands are kept — the row is a span, not a per-tick series — so no
+    write happens while the hold is live.
+    """
+
+    started_utc: datetime
+    reason: str
+    mode: str
+    decision_price: float | None
+    min_ahead: float | None
+    # When the hold first ended (the predicate went false); None while still
+    # holding. The episode stays open across the grace window so a boundary flap
+    # does not split it, but this is the true end time recorded on the row.
+    pending_close_utc: datetime | None = None
+    # Why the hold ended (the decision reason at `pending_close_utc`). Refreshed
+    # if the hold re-asserts then ends again, so the row names the final outcome.
+    ended_reason: str | None = None
+
+
 class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
     """Polls the ComEd feeds and recomputes the charge decision every tick."""
 
@@ -242,6 +277,9 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
         # a session already in progress when the process (re)starts.
         self._prev_charging: bool | None = None
         self._session: _OpenSession | None = None
+        # In-flight reserve-gate deferral episode, None between holds. In-memory
+        # only: a hold straddling a restart is dropped, like the session tracker.
+        self._deferral: _OpenDeferral | None = None
         # Last emitted charge_now, driving both the opportunistic ON hysteresis
         # (see should_charge_now `charging`) and edge detection for transitions.
         # None until the first decision, so no synthetic edge fires at startup.
@@ -581,6 +619,7 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
                 # start edge, so the record marks a lockout-delayed start.
                 self._lockout_held = True
             self._note_transition(decision, now, volatility)
+            self._note_deferral(decision, now)
             if forecast:
                 schedule = project_schedule(
                     now,
@@ -870,6 +909,121 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
             )
         )
 
+    # --- charge deferrals ----------------------------------------------------
+
+    @callback
+    def _note_deferral(self, decision: ChargeDecision, now: datetime) -> None:
+        """Track reserve-gate deferral episodes: one persisted row per hold.
+
+        A deferral is the reserve gate (`cheaper_later`) holding a would-be charge
+        off to reach a cheaper hour — a decision that never flips `charge_now`, so
+        it leaves no transition edge. This records the *span* of each hold, written
+        only when it settles, so the per-poll price wobble inside it never lands a
+        row. Two damps keep it quiet: a re-assertion within `DEFERRAL_GRACE_SECONDS`
+        holds one episode intact across the `cheaper_hours_ahead` boundary flap,
+        and a hold shorter than `DEFERRAL_MIN_DURATION_SECONDS` is dropped at close.
+
+        Idempotent under the repeated `_build_data` calls of a single tick: a still-
+        holding tick only clears a pending close, and a pending close needs the full
+        grace window to elapse before it finalizes.
+        """
+        holding = decision.reason in _DEFERRAL_REASONS
+        episode = self._deferral
+
+        if holding:
+            if episode is None:
+                self._deferral = _OpenDeferral(
+                    started_utc=now,
+                    reason=decision.reason,
+                    mode=(
+                        MODE_DEADLINE
+                        if decision.plan is not None
+                        else MODE_OPPORTUNISTIC
+                    ),
+                    decision_price=decision.decision_price,
+                    min_ahead=decision.min_ahead,
+                )
+            else:
+                # Still (or again) holding: cancel any pending close so a boundary
+                # flap does not split the episode.
+                episode.pending_close_utc = None
+                episode.ended_reason = None
+            return
+
+        # Not holding. Arm a pending close on the first false tick, then finalize
+        # once the hold has stayed released for the grace window.
+        if episode is None:
+            return
+        if episode.pending_close_utc is None:
+            episode.pending_close_utc = now
+            episode.ended_reason = decision.reason
+            return
+        if now - episode.pending_close_utc >= timedelta(seconds=DEFERRAL_GRACE_SECONDS):
+            self._deferral = None
+            self._finalize_deferral(episode)
+
+    def _finalize_deferral(self, episode: _OpenDeferral) -> None:
+        """Persist a settled deferral episode, dropping sub-floor holds."""
+        ended = episode.pending_close_utc
+        assert ended is not None  # only reached after a pending close
+        if ended - episode.started_utc < timedelta(
+            seconds=DEFERRAL_MIN_DURATION_SECONDS
+        ):
+            _LOGGER.debug("deferral shorter than floor; not recording")
+            return
+        _LOGGER.debug(
+            "recorded deferral (%s): held %s waiting for %s",
+            episode.reason,
+            ended - episode.started_utc,
+            episode.min_ahead,
+        )
+        self.config_entry.async_create_background_task(
+            self.hass,
+            self._async_record_deferral(episode, ended),
+            "comed_ev_deferral",
+        )
+
+    async def _async_record_deferral(
+        self, episode: _OpenDeferral, ended: datetime
+    ) -> None:
+        """Persist one deferral row to the SQLite store (off the event loop)."""
+        await self.hass.async_add_executor_job(
+            partial(
+                self._session_store.insert_deferral,
+                started_utc=episode.started_utc,
+                ended_utc=ended,
+                reason=episode.reason,
+                mode=episode.mode,
+                decision_price=episode.decision_price,
+                min_ahead=episode.min_ahead,
+                ended_reason=episode.ended_reason,
+                retention=DEFERRAL_RETENTION,
+            )
+        )
+
+    async def async_get_deferrals(self, limit: int) -> list[dict]:
+        """Return recent deferral episodes (newest first) for the Activity card.
+
+        Each row is tagged `kind: "deferral"` and anchored at the hold's start
+        (`ts`), so it merges into the transition timeline as a span.
+        """
+        deferrals = await self.hass.async_add_executor_job(
+            partial(self._session_store.list_deferrals, limit=limit)
+        )
+        return [
+            {
+                "kind": "deferral",
+                "ts": d.started_utc.isoformat(),
+                "ended": d.ended_utc.isoformat(),
+                "reason": d.reason,
+                "mode": d.mode,
+                "decision_price": d.decision_price,
+                "min_ahead": d.min_ahead,
+                "ended_reason": d.ended_reason,
+            }
+            for d in deferrals
+        ]
+
     async def async_get_transitions(self, limit: int) -> list[dict]:
         """Return recent transitions (newest first) for diagnostics and the card.
 
@@ -891,6 +1045,7 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
             plan = context.get("plan") or {}
             rows.append(
                 {
+                    "kind": "edge",
                     "ts": t.ts_utc.isoformat(),
                     "charging": t.charging,
                     "reason": t.reason,
