@@ -63,6 +63,9 @@ function fmtHour(iso) {
   const d = new Date(iso);
   return d.toLocaleTimeString([], { hour: "numeric" });
 }
+function fmtTime(iso) {
+  return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
 function fmtDay(iso) {
   return new Date(iso).toLocaleDateString([], {
     weekday: "short",
@@ -349,7 +352,7 @@ class ComEdHistoryCard extends HTMLElement {
               : `<td class="soc">—</td>`;
           return `
             <tr>
-              <td class="day"><span class="d">${fmtDay(s.started)}</span><span class="t">${fmtHour(s.started)}–${fmtHour(s.ended)}${status}</span></td>
+              <td class="day"><span class="d">${fmtDay(s.started)}</span><span class="t">${fmtTime(s.started)}–${fmtTime(s.ended)}${status}</span></td>
               <td>${Number(s.energy_kwh).toFixed(1)}</td>
               <td>${cost}</td>
               <td>${rate}</td>
