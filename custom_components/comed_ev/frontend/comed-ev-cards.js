@@ -332,7 +332,13 @@ class ComEdHistoryCard extends HTMLElement {
             s.start_soc != null && s.end_soc != null
               ? `${Math.round(s.start_soc)}→${Math.round(s.end_soc)}`
               : "—";
-          const rate = s.cents_per_kwh != null ? Number(s.cents_per_kwh).toFixed(1) : "—";
+          // Supply-only rate: distribution is billed the same on any plan, so
+          // exclude it from ¢/kWh (it still lands in the Cost column). Derived
+          // from supply_cost rather than the service's all-in cents_per_kwh.
+          const rate =
+            s.supply_cost != null && s.energy_kwh
+              ? ((s.supply_cost * 100) / s.energy_kwh).toFixed(1)
+              : "—";
           const cost = s.settled_complete ? money(s.total_cost) : `≈${money(s.total_cost)}`;
           const status = s.settled_complete
             ? ""
@@ -356,7 +362,7 @@ class ComEdHistoryCard extends HTMLElement {
         <div class="twrap">
           <table>
             <thead><tr>
-              <th>Session</th><th>kWh</th><th>Cost</th><th>¢/kWh</th><th>Saved</th><th>SOC</th>
+              <th>Session</th><th>kWh</th><th>Cost</th><th>Supply<br>¢/kWh</th><th>Saved</th><th>SOC</th>
             </tr></thead>
             <tbody>${trs}</tbody>
           </table>
