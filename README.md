@@ -102,9 +102,12 @@ hours, energy, estimated cost, and ready-by time. Reads the `charge_schedule` se
 
 ```yaml
 type: custom:comed-ev-schedule-card
-# entity: sensor.comed_ev_charging_charge_schedule   # default; override if renamed
+# entity: sensor.comed_ev_charging_charge_schedule   # auto-detected; set to pin/override
 # title: Charge Schedule
 ```
+
+The card finds its schedule sensor automatically from the entity registry, so a renamed
+entity or a second config entry still works; set `entity:` only to pin a specific one.
 
 **Charge History** — recent settled sessions in a table: energy, cost, effective
 ¢/kWh, savings vs. the flat-rate baseline, and SOC start→end, with a monthly rollup.
@@ -130,8 +133,9 @@ type: custom:comed-ev-activity-card
 ```
 
 The schedule card branches on `mode`: it shows a departure/ready-by summary in deadline
-mode and an opportunistic label when no departure is set. If a card shows "not found",
-confirm the schedule entity id or set `entity:` explicitly.
+mode and an opportunistic label when no departure is set. If the schedule card reports no
+sensor found, confirm the integration loaded (a full restart may be needed after an
+upgrade) or set `entity:` explicitly.
 
 ## Installation
 
