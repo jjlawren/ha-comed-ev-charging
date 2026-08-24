@@ -6,6 +6,7 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 
 from .coordinator import ComEdConfigEntry, ComEdCoordinator
+from .frontend import async_register_frontend
 from .services import async_setup_services, async_unload_services
 
 PLATFORMS: list[Platform] = [
@@ -25,6 +26,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ComEdConfigEntry) -> boo
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     await async_setup_services(hass)
+    await async_register_frontend(hass)
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     return True
 

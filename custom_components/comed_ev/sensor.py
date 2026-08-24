@@ -74,6 +74,31 @@ def _cheapest_hour_attrs(data: ComEdData) -> Mapping[str, Any]:
     }
 
 
+def _schedule_attrs(data: ComEdData) -> Mapping[str, Any]:
+    schedule = data.schedule
+    if schedule is None:
+        return {}
+    attrs: dict[str, Any] = {
+        "mode": schedule.mode,
+        "charging_energy_kwh": round(schedule.charging_energy_kwh, 2),
+        "hours": [
+            {
+                "hour_ending": h.hour_ending.isoformat(),
+                "price": round(h.price, 2),
+                "source": h.source,
+                "charging": h.charging,
+                "projected_soc": round(h.projected_soc, 1),
+            }
+            for h in schedule.hours
+        ],
+    }
+    if schedule.ready_time is not None:
+        attrs["ready_time"] = schedule.ready_time.isoformat()
+    if data.charge_cost is not None:
+        attrs["estimated_cost"] = round(data.charge_cost.estimated_cost, 2)
+    return attrs
+
+
 def _charge_cost_attrs(data: ComEdData) -> Mapping[str, Any]:
     cost = data.charge_cost
     if cost is None:
@@ -194,6 +219,14 @@ SENSORS: tuple[ComEdSensorDescription, ...] = (
         attrs_fn=_end_soc_attrs,
     ),
     ComEdSensorDescription(
+        key="charge_schedule",
+        translation_key="charge_schedule",
+        native_unit_of_measurement="h",
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda d: d.schedule.charging_hours if d.schedule else None,
+        attrs_fn=_schedule_attrs,
+    ),
+    ComEdSensorDescription(
         key="energy_needed",
         translation_key="energy_needed",
         native_unit_of_measurement="kWh",
@@ -297,6 +330,9 @@ class ComEdSensor(ComEdEntity, SensorEntity):
     """A coordinator-backed ComEd sensor."""
 
     entity_description: ComEdSensorDescription
+    # The charge_schedule sensor's hours[] is a per-hour list that shifts each
+    # hour; keep it live in state for the card but out of the recorder.
+    _unrecorded_attributes = frozenset({"hours"})
 
     def __init__(
         self, coordinator: ComEdCoordinator, description: ComEdSensorDescription

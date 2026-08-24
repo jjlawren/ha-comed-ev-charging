@@ -52,6 +52,7 @@ number entities.
 | `sensor.comed_ev_hourly_price` | Current-hour average price. |
 | `sensor.comed_ev_charge_threshold` | Current `T(SOC)`; attributes: floor/ceiling, mode. |
 | `sensor.comed_ev_projected_end_soc` | Deadline mode only: projected SOC at departure. |
+| `sensor.comed_ev_charge_schedule` | Charging hours ahead (state). Attributes: `hours` (per-hour `hour_ending`, `price`, `source`, `charging`, `projected_soc`), `mode` (`deadline`/`opportunistic`), `ready_time`, `charging_energy_kwh`, `estimated_cost`. Backs the schedule card; `hours` is excluded from the recorder. |
 | `sensor.comed_ev_energy_needed_to_target` | Wall energy (kWh) to reach target SOC (target−current, divided by efficiency). |
 | `sensor.comed_ev_estimated_charge_cost` | Estimated cost ($) of the upcoming charge, priced over the cheapest forecast hours plus the fixed distribution rate. Window is now→departure (deadline mode) or now→next 6 AM Central otherwise. Attributes: `energy_kwh`, `average_price` (supply-only $/kWh), `supply_cost`, `distribution_cost`, `hours_used`. |
 | `sensor.comed_ev_estimated_charge_average_price` | Estimated supply-only average $/kWh for that charge (excludes the distribution rate). |
@@ -80,6 +81,37 @@ compares supply only, since distribution is billed the same on any plan.
 The `comed_ev.get_sessions` service returns the recorded sessions (optional `start`/
 `end` bounds) with energy, settled cost, ¢/kWh, and savings — use it for reports or
 automations.
+
+## Dashboard cards
+
+Two Lovelace cards ship with the integration and load automatically — no manual
+resource registration. After installing, add them from a dashboard with **Add card →**
+search "ComEd EV", or in YAML:
+
+**Charge Schedule** — the forward-looking plan: one row per forecast hour with its
+price, whether it is a charging hour, and the projected SOC, plus a footer of charging
+hours, energy, estimated cost, and ready-by time. Reads the `charge_schedule` sensor.
+
+```yaml
+type: custom:comed-ev-schedule-card
+# entity: sensor.comed_ev_charging_charge_schedule   # default; override if renamed
+# title: Charge Schedule
+```
+
+**Charge History** — recent settled sessions in a table: energy, cost, effective
+¢/kWh, savings vs. the flat-rate baseline, and SOC start→end, with a monthly rollup.
+Calls the `comed_ev.get_sessions` service; the cost and savings columns need the
+distribution rate and flat-rate baseline set in options (see above).
+
+```yaml
+type: custom:comed-ev-history-card
+# title: Recent Charges
+# days: 14   # look-back window
+```
+
+The schedule card branches on `mode`: it shows a departure/ready-by summary in deadline
+mode and an opportunistic label when no departure is set. If a card shows "not found",
+confirm the schedule entity id or set `entity:` explicitly.
 
 ## Installation
 

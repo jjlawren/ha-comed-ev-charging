@@ -8,6 +8,8 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from custom_components.comed_ev.optimizer import (
+    MODE_DEADLINE,
+    MODE_OPPORTUNISTIC,
     REASON_ABOVE_THRESHOLD,
     REASON_BELOW_THRESHOLD,
     REASON_CHEAPER_LATER,
@@ -26,6 +28,7 @@ from custom_components.comed_ev.optimizer import (
     energy_needed_kwh,
     estimate_charge_cost,
     plan_charge,
+    project_schedule,
     should_charge_now,
 )
 
@@ -467,3 +470,86 @@ def test_hour_buckets_empty_interval():
     t = datetime(2026, 8, 20, 2, 0, tzinfo=UTC)
     assert hour_buckets(t, t) == {}
     assert hour_buckets(t, t - timedelta(hours=1)) == {}
+
+
+# --- project_schedule --------------------------------------------------------
+
+# 60 kWh pack, 10 kW wall, 0.9 efficiency -> +15% SOC per charging hour, and
+# 50->80 needs 20 kWh wall = 2 whole hours.
+_SCHED = {"capacity_kwh": 60.0, "charge_rate_kw": 10.0, "efficiency": 0.9}
+_BAND = {"price_floor": 2.0, "price_ceiling": 10.0}
+
+
+def _charging_ends(schedule) -> set[datetime]:
+    return {h.hour_ending for h in schedule.hours if h.charging}
+
+
+def test_schedule_deadline_reserves_the_cheapest_hours():
+    # Cheapest two hours (2¢ at 23:00, 3¢ at 00:00) are reserved; pricier hours
+    # before and after are skipped. Departure leaves ample slack.
+    forecast = _hourly_forecast(5.0, 4.0, 2.0, 3.0, 6.0, 7.0)
+    base = NOW.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    schedule = project_schedule(
+        NOW, forecast, 50.0, 80.0, **_SCHED, **_BAND,
+        departure=base + timedelta(hours=6),
+    )
+    assert schedule.mode == MODE_DEADLINE
+    assert schedule.charging_hours == 2
+    assert _charging_ends(schedule) == {
+        base + timedelta(hours=2),  # 2¢
+        base + timedelta(hours=3),  # 3¢
+    }
+    assert schedule.charging_energy_kwh == pytest.approx(20.0)
+    assert schedule.ready_time == base + timedelta(hours=3)
+
+
+def test_schedule_projected_soc_rises_then_holds_at_target():
+    forecast = _hourly_forecast(5.0, 4.0, 2.0, 3.0, 6.0, 7.0)
+    base = NOW.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    schedule = project_schedule(
+        NOW, forecast, 50.0, 80.0, **_SCHED, **_BAND,
+        departure=base + timedelta(hours=6),
+    )
+    socs = [h.projected_soc for h in schedule.hours]
+    # 50 (skip), 50 (skip), 65 (charge), 80 (charge), 80, 80 — never falls, capped.
+    assert socs == pytest.approx([50.0, 50.0, 65.0, 80.0, 80.0, 80.0])
+
+
+def test_schedule_deadline_charges_pricey_hours_when_window_is_tight():
+    # Two hours to departure and two needed: both charge despite high prices,
+    # since deferral would miss the deadline.
+    forecast = _hourly_forecast(9.0, 8.0)
+    base = NOW.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    schedule = project_schedule(
+        NOW, forecast, 50.0, 80.0, **_SCHED, **_BAND,
+        departure=base + timedelta(hours=2),
+    )
+    assert schedule.charging_hours == 2
+    assert schedule.ready_time == base + timedelta(hours=1)
+
+
+def test_schedule_opportunistic_charges_only_below_threshold():
+    # No departure: only the 2¢ trough beats T(SOC); pricier hours are skipped
+    # and the target is never reached.
+    forecast = _hourly_forecast(5.0, 4.0, 2.0, 3.0, 6.0, 7.0)
+    base = NOW.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    schedule = project_schedule(NOW, forecast, 50.0, 80.0, **_SCHED, **_BAND)
+    assert schedule.mode == MODE_OPPORTUNISTIC
+    assert _charging_ends(schedule) == {base + timedelta(hours=2)}
+    assert schedule.charging_hours == 1
+    assert schedule.ready_time is None
+
+
+def test_schedule_target_reached_is_all_idle():
+    forecast = _hourly_forecast(2.0, 2.0, 2.0)
+    schedule = project_schedule(NOW, forecast, 80.0, 80.0, **_SCHED, **_BAND)
+    assert schedule.charging_hours == 0
+    assert all(not h.charging for h in schedule.hours)
+    assert schedule.charging_energy_kwh == 0.0
+
+
+def test_schedule_empty_forecast_is_empty():
+    schedule = project_schedule(NOW, {}, 50.0, 80.0, **_SCHED, **_BAND)
+    assert schedule.hours == []
+    assert schedule.charging_hours == 0
+    assert schedule.ready_time is None
