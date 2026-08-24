@@ -218,8 +218,9 @@ class ChargeDecision:
     explains itself without re-deriving the logic: `threshold` is the raw
     T(SOC), `on_threshold` is the effective bar actually tested (T minus the
     `deadband` when turning ON, T alone when already charging), and `min_ahead`
-    is the cheapest forecast hour still ahead that the `cheaper_later` test used
-    (None when that test did not apply).
+    is the cheapest forecast hour still ahead, carried for display (the
+    `cheaper_later` deferral itself counts cheaper hours, not this price; None
+    when the opportunistic branch did not run).
     """
 
     charge_now: bool
@@ -266,8 +267,8 @@ def cheapest_hour_ahead_price(
     """Lowest price among forecast hours ending after the current hour.
 
     None when no future hour is forecast, i.e. nothing cheaper can be waited
-    for. Used by opportunistic charging to judge how close the current price is
-    to the trough of the remaining window.
+    for. Surfaced on the decision as `min_ahead` for display; the opportunistic
+    deferral itself ranks the current hour by `cheaper_hours_ahead`, not this.
     """
     end = _current_hour_end(now)
     ahead = [h.price for h in forecast.values() if h.hour_ending > end]
@@ -287,7 +288,6 @@ def should_charge_now(
     plan: ChargePlan | None = None,
     forecast: dict[datetime, ForecastHour] | None = None,
     hours_needed: int | None = None,
-    price_margin: float = 1.0,
     charging: bool = False,
     deadband: float = 0.0,
     min_off_active: bool = False,
@@ -314,9 +314,13 @@ def should_charge_now(
       4. else                               -> on   (cheapest_hours)
 
     Opportunistic mode (no deadline) never forces completion. It caps
-    willingness-to-pay at the SOC threshold and, within that, charges only when
-    the price is at or near the trough of the remaining window (within
-    `price_margin` of the cheapest hour still ahead).
+    willingness-to-pay at the SOC threshold and, within that, reserves the
+    cheapest hours exactly like deadline mode: it defers while at least
+    `hours_needed` future hours are priced below the live price, so charging
+    lands on the trough of the remaining window rather than the first affordable
+    hour. A live hour that undercuts every remaining forecast hour still charges
+    at once (its rank falls below `hours_needed`), so an unexpected dip is never
+    passed up. Unlike deadline mode there is no `must_charge` safety net.
 
     An asymmetric `deadband` damps short-cycling around the threshold: turning
     ON needs the price a full `deadband` below T(SOC), while staying ON (when
@@ -329,7 +333,7 @@ def should_charge_now(
     never delayed, so charging cannot re-engage faster than that window.
       1. target reached                     -> off  (target_reached)
       2. decision_price >= on_threshold     -> off  (above_threshold)
-      3. a cheaper hour is > margin ahead   -> off  (cheaper_later)
+      3. >= hours_needed cheaper hours left -> off  (cheaper_later)
       4. off and still within min-off       -> off  (min_off_lockout)
       5. else                               -> on   (below_threshold)
     """
@@ -385,8 +389,12 @@ def should_charge_now(
     on_threshold = threshold if charging else threshold - deadband
     if decision_price >= on_threshold:
         return decide(False, REASON_ABOVE_THRESHOLD, on_threshold=on_threshold)
+    # Reserve the cheapest hours: defer while at least `hours_needed` future
+    # hours are priced below the live price, so charging lands on the trough
+    # unless a live hour undercuts every remaining forecast hour. `min_ahead`
+    # is carried for display only.
     min_ahead = cheapest_hour_ahead_price(forecast, now)
-    if min_ahead is not None and decision_price > min_ahead + price_margin:
+    if hours_needed and cheaper_hours_ahead(forecast, now, decision_price) >= hours_needed:
         return decide(
             False, REASON_CHEAPER_LATER, on_threshold=on_threshold, min_ahead=min_ahead
         )
@@ -447,7 +455,6 @@ def project_schedule(
     price_ceiling: float,
     min_soc: float = 0.0,
     gamma: float = 2.5,
-    price_margin: float = 1.0,
     departure: datetime | None = None,
 ) -> Schedule:
     """Project the charge decision across every forecast hour.
@@ -478,8 +485,16 @@ def project_schedule(
         # Treat the top of this forecast hour as the decision instant, so the
         # decision helpers rank it as "now" and later hours as "ahead".
         sim_now = hour.hour_ending - timedelta(hours=1)
+        # Whole hours of charging still needed at the projected SOC. Both modes
+        # use this to reserve the cheapest hours; deadline mode overrides it with
+        # the plan's value (same computation) and adds the must_charge net.
+        energy = energy_needed_kwh(soc, target_soc, capacity_kwh, efficiency)
+        hours_needed: int | None = (
+            ceil(energy / charge_rate_kw)
+            if charge_rate_kw > 0 and energy > 0
+            else None
+        )
         plan: ChargePlan | None = None
-        hours_needed: int | None = None
         if departure is not None:
             plan = plan_charge(
                 sim_now,
@@ -504,7 +519,6 @@ def project_schedule(
             plan=plan,
             forecast=forecast,
             hours_needed=hours_needed,
-            price_margin=price_margin,
         )
         charging = decision.charge_now
         if charging:

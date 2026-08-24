@@ -115,15 +115,6 @@ NUMBERS: tuple[ComEdNumberDescription, ...] = (
         native_step=0.1,
         native_unit_of_measurement=CENTS,
     ),
-    ComEdNumberDescription(
-        key="price_margin",
-        translation_key="price_margin",
-        field="price_margin",
-        native_min_value=0,
-        native_max_value=20,
-        native_step=0.1,
-        native_unit_of_measurement=CENTS,
-    ),
 )
 
 
