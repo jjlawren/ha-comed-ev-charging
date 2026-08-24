@@ -8,3 +8,14 @@ get_sessions:
       example: "2026-02-01 00:00:00"
       selector:
         datetime:
+
+get_transitions:
+  fields:
+    limit:
+      example: 50
+      default: 50
+      selector:
+        number:
+          min: 1
+          max: 500
+          mode: box

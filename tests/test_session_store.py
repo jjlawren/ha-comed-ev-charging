@@ -124,3 +124,49 @@ def test_settled_prices_empty_inputs(store):
 
 def test_parse_naive_string_assumes_utc():
     assert _parse("2026-08-20T02:00:00") == _dt(2)
+
+
+# --- transitions -------------------------------------------------------------
+
+
+def test_transition_insert_and_list_newest_first(store):
+    store.insert_transition(
+        ts_utc=_dt(1), charging=True, reason="below_threshold", mode="opportunistic",
+        decision_price=3.0, threshold=5.1, on_threshold=4.3, deadband=0.8,
+        volatility=0.8, lockout_held=True, context_json='{"reason": "below_threshold"}',
+    )
+    store.insert_transition(
+        ts_utc=_dt(2), charging=False, reason="above_threshold", mode="opportunistic",
+        decision_price=5.4, threshold=5.1, on_threshold=5.1, deadband=0.8,
+        volatility=0.8,
+    )
+    rows = store.list_transitions()
+    assert [r.charging for r in rows] == [False, True]  # newest first
+    latest = rows[0]
+    assert latest.reason == "above_threshold"
+    assert latest.on_threshold == 5.1
+    assert latest.ts_utc == _dt(2)
+    assert latest.ts_utc.tzinfo == UTC
+    assert latest.lockout_held is False  # defaults to False when not supplied
+    # context_json round-trips as an opaque string (None when not supplied).
+    assert rows[1].context_json == '{"reason": "below_threshold"}'
+    assert rows[1].lockout_held is True  # the start that the lockout held
+    assert latest.context_json is None
+
+
+def test_transition_list_respects_limit(store):
+    for h in range(1, 6):
+        store.insert_transition(
+            ts_utc=_dt(h), charging=bool(h % 2), reason="r"
+        )
+    assert len(store.list_transitions(limit=2)) == 2
+
+
+def test_transition_retention_prunes_oldest(store):
+    for h in range(6):
+        store.insert_transition(
+            ts_utc=_dt(h), charging=True, reason="r", retention=3
+        )
+    rows = store.list_transitions(limit=100)
+    assert len(rows) == 3  # only the newest three survive
+    assert [r.ts_utc for r in rows] == [_dt(5), _dt(4), _dt(3)]

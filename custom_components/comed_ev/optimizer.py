@@ -19,6 +19,7 @@ REASON_BELOW_THRESHOLD = "below_threshold"
 REASON_ABOVE_THRESHOLD = "above_threshold"
 REASON_CHEAPER_LATER = "cheaper_later"
 REASON_CHEAPEST_HOURS = "cheapest_hours"
+REASON_MIN_OFF_LOCKOUT = "min_off_lockout"
 
 # Forecast provenance, best-to-worst.
 SOURCE_DAY_AHEAD = "day_ahead"
@@ -210,7 +211,16 @@ class ChargePlan:
 
 @dataclass(frozen=True)
 class ChargeDecision:
-    """The result of `should_charge_now`."""
+    """The result of `should_charge_now`, carrying the operands it compared.
+
+    Beyond the outcome (`charge_now`/`reason`) the decision records the exact
+    values that produced it, so any single tick — and any logged transition —
+    explains itself without re-deriving the logic: `threshold` is the raw
+    T(SOC), `on_threshold` is the effective bar actually tested (T minus the
+    `deadband` when turning ON, T alone when already charging), and `min_ahead`
+    is the cheapest forecast hour still ahead that the `cheaper_later` test used
+    (None when that test did not apply).
+    """
 
     charge_now: bool
     reason: str
@@ -219,6 +229,9 @@ class ChargeDecision:
     urgency: float
     gamma: float
     plan: ChargePlan | None = None
+    deadband: float = 0.0
+    on_threshold: float = 0.0
+    min_ahead: float | None = None
 
 
 def _current_hour_end(now: datetime) -> datetime:
@@ -275,6 +288,9 @@ def should_charge_now(
     forecast: dict[datetime, ForecastHour] | None = None,
     hours_needed: int | None = None,
     price_margin: float = 1.0,
+    charging: bool = False,
+    deadband: float = 0.0,
+    min_off_active: bool = False,
 ) -> ChargeDecision:
     """Decide whether to charge right now against the running hourly average.
 
@@ -301,10 +317,21 @@ def should_charge_now(
     willingness-to-pay at the SOC threshold and, within that, charges only when
     the price is at or near the trough of the remaining window (within
     `price_margin` of the cheapest hour still ahead).
+
+    An asymmetric `deadband` damps short-cycling around the threshold: turning
+    ON needs the price a full `deadband` below T(SOC), while staying ON (when
+    `charging` is already True) only needs it under T. So boundary noise no
+    longer flaps the switch on, yet a genuine rise above T still releases it at
+    once — the OFF side is never damped, so an unexpected spike is escaped
+    immediately rather than trapped. The effective bar is `on_threshold`.
+    `min_off_active` (True while inside the minimum-off-time window after a stop)
+    blocks a fresh ON only: an already-charging run is unaffected and OFF is
+    never delayed, so charging cannot re-engage faster than that window.
       1. target reached                     -> off  (target_reached)
-      2. decision_price >= T(SOC)           -> off  (above_threshold)
+      2. decision_price >= on_threshold     -> off  (above_threshold)
       3. a cheaper hour is > margin ahead   -> off  (cheaper_later)
-      4. else                               -> on   (below_threshold)
+      4. off and still within min-off       -> off  (min_off_lockout)
+      5. else                               -> on   (below_threshold)
     """
     urgency = soc_urgency(current_soc, target_soc, min_soc)
     threshold = charge_threshold(
@@ -317,9 +344,24 @@ def should_charge_now(
     )
     forecast = forecast or {}
 
-    def decide(charge: bool, reason: str) -> ChargeDecision:
+    def decide(
+        charge: bool,
+        reason: str,
+        *,
+        on_threshold: float = threshold,
+        min_ahead: float | None = None,
+    ) -> ChargeDecision:
         return ChargeDecision(
-            charge, reason, decision_price, threshold, urgency, gamma, plan
+            charge_now=charge,
+            reason=reason,
+            decision_price=decision_price,
+            threshold=threshold,
+            urgency=urgency,
+            gamma=gamma,
+            plan=plan,
+            deadband=deadband,
+            on_threshold=on_threshold,
+            min_ahead=min_ahead,
         )
 
     if current_soc >= target_soc:
@@ -327,7 +369,8 @@ def should_charge_now(
 
     if plan is not None:
         # Deadline mode: complete by departure, scheduled into the cheapest
-        # hours. Threshold is not consulted; must_charge is the safety net.
+        # hours. Threshold and deadband are not consulted; must_charge is the
+        # safety net.
         if plan.slack_hours <= 0:
             return decide(True, REASON_MUST_CHARGE)
         if (
@@ -337,13 +380,25 @@ def should_charge_now(
             return decide(False, REASON_CHEAPER_LATER)
         return decide(True, REASON_CHEAPEST_HOURS)
 
-    # Opportunistic mode: no obligation to complete.
-    if decision_price >= threshold:
-        return decide(False, REASON_ABOVE_THRESHOLD)
+    # Opportunistic mode: no obligation to complete. Asymmetric deadband — the
+    # ON bar sits a full `deadband` below T; once charging it relaxes to T.
+    on_threshold = threshold if charging else threshold - deadband
+    if decision_price >= on_threshold:
+        return decide(False, REASON_ABOVE_THRESHOLD, on_threshold=on_threshold)
     min_ahead = cheapest_hour_ahead_price(forecast, now)
     if min_ahead is not None and decision_price > min_ahead + price_margin:
-        return decide(False, REASON_CHEAPER_LATER)
-    return decide(True, REASON_BELOW_THRESHOLD)
+        return decide(
+            False, REASON_CHEAPER_LATER, on_threshold=on_threshold, min_ahead=min_ahead
+        )
+    # Price wants charging, but hold off if we only just stopped: OFF is instant,
+    # re-ON is rate-limited (already-charging runs skip this — charging is False).
+    if not charging and min_off_active:
+        return decide(
+            False, REASON_MIN_OFF_LOCKOUT, on_threshold=on_threshold, min_ahead=min_ahead
+        )
+    return decide(
+        True, REASON_BELOW_THRESHOLD, on_threshold=on_threshold, min_ahead=min_ahead
+    )
 
 
 MODE_DEADLINE = "deadline"

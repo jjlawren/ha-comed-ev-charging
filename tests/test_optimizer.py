@@ -14,6 +14,7 @@ from custom_components.comed_ev.optimizer import (
     REASON_BELOW_THRESHOLD,
     REASON_CHEAPER_LATER,
     REASON_CHEAPEST_HOURS,
+    REASON_MIN_OFF_LOCKOUT,
     REASON_MUST_CHARGE,
     REASON_TARGET_REACHED,
     SOURCE_DAY_AHEAD,
@@ -218,6 +219,94 @@ def test_opportunistic_never_overrides_above_threshold():
     d = _decide(79, 40.0, forecast=forecast)
     assert d.charge_now is False
     assert d.reason == REASON_ABOVE_THRESHOLD
+
+
+# --- opportunistic deadband (asymmetric short-cycle damping) -----------------
+
+
+def test_deadband_blocks_turn_on_inside_band_when_off():
+    # Currently OFF; price sits under T but inside the deadband -> stay off, so
+    # boundary noise cannot flap the switch on.
+    t = _threshold(40)
+    d = _decide(40, t - 0.5, charging=False, deadband=1.0)
+    assert d.charge_now is False
+    assert d.reason == REASON_ABOVE_THRESHOLD
+    assert d.on_threshold == pytest.approx(t - 1.0)
+
+
+def test_deadband_allows_turn_on_below_band():
+    # Currently OFF; a full deadband below T clears the higher ON bar -> charge.
+    t = _threshold(40)
+    d = _decide(40, t - 1.5, charging=False, deadband=1.0)
+    assert d.charge_now is True
+    assert d.reason == REASON_BELOW_THRESHOLD
+
+
+def test_deadband_holds_on_inside_band_when_charging():
+    # Currently ON; price under T but inside the band -> keep charging (the ON
+    # bar relaxes to T once charging, so no chatter).
+    t = _threshold(40)
+    d = _decide(40, t - 0.5, charging=True, deadband=1.0)
+    assert d.charge_now is True
+    assert d.reason == REASON_BELOW_THRESHOLD
+    assert d.on_threshold == pytest.approx(t)
+
+
+def test_deadband_releases_immediately_above_threshold_when_charging():
+    # Currently ON; a rise above T releases at once — the OFF side is undamped,
+    # so an unexpected spike is escaped rather than trapped.
+    t = _threshold(40)
+    d = _decide(40, t + 0.5, charging=True, deadband=1.0)
+    assert d.charge_now is False
+    assert d.reason == REASON_ABOVE_THRESHOLD
+
+
+def test_deadband_zero_is_backward_compatible():
+    # No deadband -> the ON bar is exactly T for both states (prior behaviour).
+    t = _threshold(40)
+    off = _decide(40, t - 0.01, charging=False, deadband=0.0)
+    assert off.charge_now is True
+    assert off.on_threshold == pytest.approx(t)
+
+
+def test_decision_records_deadband_operands():
+    # The decision carries the operands it compared, for self-explaining logs.
+    d = _decide(40, 4.0, forecast=_hourly_forecast(4.0, 3.5, 6.0), deadband=0.8)
+    assert d.deadband == pytest.approx(0.8)
+    assert d.min_ahead == pytest.approx(3.5)
+
+
+# --- minimum-off-time lockout ------------------------------------------------
+
+
+def test_min_off_lockout_blocks_reonset_when_off():
+    # Price would charge, but we only just stopped -> hold off (rate-limit re-ON).
+    d = _decide(40, 2.0, charging=False, min_off_active=True)
+    assert d.charge_now is False
+    assert d.reason == REASON_MIN_OFF_LOCKOUT
+
+
+def test_min_off_lockout_does_not_interrupt_active_charging():
+    # Already charging: the lockout never applies, so a good price keeps charging.
+    d = _decide(40, 2.0, charging=True, min_off_active=True)
+    assert d.charge_now is True
+    assert d.reason == REASON_BELOW_THRESHOLD
+
+
+def test_min_off_lockout_never_blocks_off():
+    # A spike above threshold still turns OFF during the window (OFF is instant).
+    d = _decide(79, 40.0, charging=True, min_off_active=True)
+    assert d.charge_now is False
+    assert d.reason == REASON_ABOVE_THRESHOLD
+
+
+def test_min_off_lockout_ignored_in_deadline_mode():
+    # Deadline mode must never be blocked by the lockout; must_charge still wins.
+    plan = _deadline_plan(2, soc=20)
+    assert plan.slack_hours <= 0
+    d = _decide(20, 55.0, plan=plan, min_off_active=True)
+    assert d.charge_now is True
+    assert d.reason == REASON_MUST_CHARGE
 
 
 # --- deadline scheduling (cheapest hours, deadline guaranteed) ---------------

@@ -12,6 +12,7 @@ from .const import (
     CONF_CURRENT_SOC_ENTITY,
     CONF_DEPARTURE_ENTITY,
     CONF_TARGET_SOC_ENTITY,
+    DIAGNOSTICS_TRANSITIONS,
     EFFICIENCY_MAX,
     EFFICIENCY_MIN,
     EFFICIENCY_MIN_SAMPLE_KWH,
@@ -39,6 +40,8 @@ async def async_get_config_entry_diagnostics(
         coordinator._energy_vehicle_total / evse_total if evse_total > 0 else None
     )
 
+    transitions = await coordinator.async_get_transitions(DIAGNOSTICS_TRANSITIONS)
+
     return {
         "config": async_redact_data(dict(entry.data), TO_REDACT),
         "options": dict(entry.options),
@@ -51,7 +54,10 @@ async def async_get_config_entry_diagnostics(
             "mode": data.mode if data else None,
             "suggestion": asdict(data.suggestion) if data else None,
             "decision": decision,
+            "volatility": coordinator._last_volatility,
+            "deadband": coordinator._last_deadband,
         },
+        "transitions": transitions,
         "energy": {
             "vehicle_entity": coordinator._energy_vehicle_entity,
             "evse_entity": coordinator._energy_evse_entity,

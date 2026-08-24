@@ -727,6 +727,58 @@ async def test_get_sessions_service(hass: HomeAssistant, mock_client) -> None:
     assert rows[0]["energy_source"] == "meter"
 
 
+async def test_get_transitions_service(hass: HomeAssistant, mock_client) -> None:
+    """The get_transitions service returns recorded edges, newest first."""
+    from datetime import UTC, datetime
+
+    hass.states.async_set("sensor.ev_soc", "20")
+    hass.states.async_set("number.ev_target", "80")
+    coordinator = await _build_coordinator(hass)
+
+    await hass.async_add_executor_job(
+        lambda: coordinator._session_store.insert_transition(
+            ts_utc=datetime(2026, 8, 20, 1, 0, tzinfo=UTC),
+            charging=True,
+            reason="below_threshold",
+            mode="opportunistic",
+            decision_price=3.0,
+            threshold=5.1,
+            on_threshold=4.3,
+            deadband=0.8,
+            volatility=0.8,
+            lockout_held=True,
+            context_json='{"min_ahead": 3.5, "plan": null}',
+        )
+    )
+    await hass.async_add_executor_job(
+        lambda: coordinator._session_store.insert_transition(
+            ts_utc=datetime(2026, 8, 20, 2, 0, tzinfo=UTC),
+            charging=False,
+            reason="cheaper_later",
+            mode="deadline",
+            decision_price=6.1,
+            threshold=5.1,
+            on_threshold=5.1,
+            deadband=0.8,
+            volatility=0.8,
+            context_json='{"plan": {"slack_hours": 5, "hours_needed": 3}}',
+        )
+    )
+
+    response = await hass.services.async_call(
+        DOMAIN, "get_transitions", {"limit": 5}, blocking=True, return_response=True
+    )
+    rows = response["transitions"]
+    assert [r["charging"] for r in rows] == [False, True]  # newest first
+    # Newest: a deadline defer, with the plan flattened out of context_json.
+    assert rows[0]["reason"] == "cheaper_later"
+    assert rows[0]["slack_hours"] == 5
+    assert rows[0]["hours_needed"] == 3
+    # Oldest: the lockout-held start, with min_ahead flattened out.
+    assert rows[1]["lockout_held"] is True
+    assert rows[1]["min_ahead"] == 3.5
+
+
 async def test_distribution_rate_added_to_cost(
     hass: HomeAssistant, mock_client
 ) -> None:
