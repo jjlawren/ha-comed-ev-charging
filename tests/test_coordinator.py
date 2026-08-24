@@ -388,6 +388,55 @@ async def test_schedule_is_absent_when_only_fallback(
     assert data.schedule is None
 
 
+async def test_charge_rate_entity_zero_falls_back_to_constant(
+    hass: HomeAssistant, mock_client
+) -> None:
+    """A 0 kW live charge-rate reading is ignored for the nominal constant.
+
+    A live charge-power sensor reads ~0 kW while the car is idle — exactly when
+    the forward schedule is projected. A 0 kW rate zeroes the projected SOC gain
+    and disables the cheapest-hour reserve, so every affordable hour would be
+    painted as charging with a flat SOC. The constant must win instead, so the
+    schedule reserves only the single cheapest hour the small deficit needs.
+    """
+    from datetime import timedelta
+
+    from homeassistant.util import dt as dt_util
+
+    from custom_components.comed_ev.const import CONF_CHARGE_RATE_ENTITY
+
+    # Idle EVSE power sensor, plus a small deficit (~one hour) and cheap hours
+    # below the price floor so several hours clear the threshold.
+    hass.states.async_set("sensor.evse_power", "0")
+    hass.states.async_set("sensor.ev_soc", "78")
+    hass.states.async_set("number.ev_target", "80")
+    coordinator = await _build_coordinator(
+        hass,
+        extra_data={
+            CONF_CHARGE_RATE_ENTITY: "sensor.evse_power",
+            "charge_rate_kw": 11.0,
+        },
+    )
+    assert coordinator._charge_rate() == 11.0
+
+    now = dt_util.utcnow()
+    first_end = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    coordinator._dual_today = {
+        first_end: 1.8,
+        first_end + timedelta(hours=1): 1.2,  # cheapest
+        first_end + timedelta(hours=2): 1.6,
+    }
+
+    data = coordinator._build_data()
+
+    assert data.schedule is not None
+    # Only the single cheapest hour is reserved, and the projected SOC rises.
+    assert data.schedule.charging_hours == 1
+    charging = [h for h in data.schedule.hours if h.charging]
+    assert [h.hour_ending for h in charging] == [first_end + timedelta(hours=1)]
+    assert data.schedule.hours[-1].projected_soc > 78.0
+
+
 async def test_target_reached_turns_off(hass: HomeAssistant, mock_client) -> None:
     """At/above target the binary sensor stays off."""
     hass.states.async_set("sensor.ev_soc", "80")

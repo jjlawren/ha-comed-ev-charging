@@ -1286,20 +1286,33 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
             return None
 
     def _charge_rate(self) -> float:
-        """Return the charge rate in kW from the entity, else the constant."""
+        """Return the charge rate in kW from the entity, else the constant.
+
+        A non-positive entity reading is ignored: a live charge-power sensor
+        reads ~0 kW whenever the car is idle — exactly when the forward schedule
+        is projected — and a 0 kW rate is never a usable planning value. Zero
+        would zero the projected SOC gain and disable the cheapest-hour reserve,
+        painting every affordable hour as charging. Fall back to the nominal
+        constant instead.
+        """
         entity = self.config_entry.data.get(CONF_CHARGE_RATE_ENTITY)
         if entity:
             value = self._get_float(entity)
-            if value is not None:
+            if value is not None and value > 0:
                 return value
         return self.config_entry.data.get(CONF_CHARGE_RATE_KW, 0.0)
 
     def _capacity_kwh(self) -> float:
-        """Return the battery capacity in kWh from the entity, else the constant."""
+        """Return the battery capacity in kWh from the entity, else the constant.
+
+        A non-positive reading is ignored for the same reason as the charge
+        rate: a zero capacity is never meaningful and would break the SOC
+        projection. Fall back to the configured constant.
+        """
         entity = self.config_entry.data.get(CONF_CAPACITY_ENTITY)
         if entity:
             value = self._get_float(entity)
-            if value is not None:
+            if value is not None and value > 0:
                 return value
         return self.config_entry.data.get(CONF_CAPACITY_KWH, 0.0)
 
