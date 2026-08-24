@@ -199,6 +199,19 @@ def test_opportunistic_charges_when_current_among_cheapest_needed():
     assert d.reason == REASON_BELOW_THRESHOLD
 
 
+def test_opportunistic_reserve_does_not_interrupt_active_charging():
+    # Same inputs as the OFF-state defer, but already charging: the reserve is a
+    # start-suppression only, so it must not stop a run — else live-price wobble
+    # near a forecast-price cluster would short-cycle the switch.
+    forecast = _hourly_forecast(4.0, 2.0, 2.0)
+    off = _decide(40, 4.0, forecast=forecast, hours_needed=2, charging=False)
+    assert off.charge_now is False
+    assert off.reason == REASON_CHEAPER_LATER
+    on = _decide(40, 4.0, forecast=forecast, hours_needed=2, charging=True)
+    assert on.charge_now is True
+    assert on.reason == REASON_BELOW_THRESHOLD
+
+
 def test_opportunistic_charges_when_no_cheaper_hours_ahead():
     forecast = _hourly_forecast(4.0, 5.0, 6.0)
     d = _decide(40, 4.0, forecast=forecast, hours_needed=2)

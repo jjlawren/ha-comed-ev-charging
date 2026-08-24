@@ -315,12 +315,16 @@ def should_charge_now(
 
     Opportunistic mode (no deadline) never forces completion. It caps
     willingness-to-pay at the SOC threshold and, within that, reserves the
-    cheapest hours exactly like deadline mode: it defers while at least
-    `hours_needed` future hours are priced below the live price, so charging
-    lands on the trough of the remaining window rather than the first affordable
-    hour. A live hour that undercuts every remaining forecast hour still charges
-    at once (its rank falls below `hours_needed`), so an unexpected dip is never
-    passed up. Unlike deadline mode there is no `must_charge` safety net.
+    cheapest hours much like deadline mode: while OFF it defers starting until at
+    least `hours_needed` future hours are priced below the live price, so
+    charging lands on the trough of the remaining window rather than the first
+    affordable hour. A live hour that undercuts every remaining forecast hour
+    still charges at once (its rank falls below `hours_needed`), so an unexpected
+    dip is never passed up. The reserve is a start-suppression only: once
+    charging it no longer defers, so live-price noise near a forecast-price
+    cluster cannot flip the reserve count off-and-on and short-cycle the run —
+    just as the min-off lockout never interrupts an active run. Unlike deadline
+    mode there is no `must_charge` safety net.
 
     An asymmetric `deadband` damps short-cycling around the threshold: turning
     ON needs the price a full `deadband` below T(SOC), while staying ON (when
@@ -331,11 +335,11 @@ def should_charge_now(
     `min_off_active` (True while inside the minimum-off-time window after a stop)
     blocks a fresh ON only: an already-charging run is unaffected and OFF is
     never delayed, so charging cannot re-engage faster than that window.
-      1. target reached                     -> off  (target_reached)
-      2. decision_price >= on_threshold     -> off  (above_threshold)
-      3. >= hours_needed cheaper hours left -> off  (cheaper_later)
-      4. off and still within min-off       -> off  (min_off_lockout)
-      5. else                               -> on   (below_threshold)
+      1. target reached                        -> off  (target_reached)
+      2. decision_price >= on_threshold        -> off  (above_threshold)
+      3. off and >= hours_needed cheaper left  -> off  (cheaper_later)
+      4. off and still within min-off          -> off  (min_off_lockout)
+      5. else                                  -> on   (below_threshold)
     """
     urgency = soc_urgency(current_soc, target_soc, min_soc)
     threshold = charge_threshold(
@@ -389,12 +393,20 @@ def should_charge_now(
     on_threshold = threshold if charging else threshold - deadband
     if decision_price >= on_threshold:
         return decide(False, REASON_ABOVE_THRESHOLD, on_threshold=on_threshold)
-    # Reserve the cheapest hours: defer while at least `hours_needed` future
-    # hours are priced below the live price, so charging lands on the trough
-    # unless a live hour undercuts every remaining forecast hour. `min_ahead`
-    # is carried for display only.
+    # Reserve the cheapest hours: while OFF, defer starting until at least
+    # `hours_needed` future hours are priced below the live price, so charging
+    # lands on the trough unless a live hour undercuts every remaining forecast
+    # hour. This is a start-suppression only: once charging, it no longer fires,
+    # so live-price wobble near a forecast-price cluster cannot flip the reserve
+    # count and short-cycle a run — exactly as the min-off lockout never
+    # interrupts active charging. A genuine rise above T still releases it via
+    # the undamped `above_threshold` check. `min_ahead` is carried for display.
     min_ahead = cheapest_hour_ahead_price(forecast, now)
-    if hours_needed and cheaper_hours_ahead(forecast, now, decision_price) >= hours_needed:
+    if (
+        not charging
+        and hours_needed
+        and cheaper_hours_ahead(forecast, now, decision_price) >= hours_needed
+    ):
         return decide(
             False, REASON_CHEAPER_LATER, on_threshold=on_threshold, min_ahead=min_ahead
         )
