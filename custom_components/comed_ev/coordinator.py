@@ -47,7 +47,6 @@ from .const import (
     CONF_POLL_INTERVAL,
     CONF_PRICE_CEILING,
     CONF_PRICE_FLOOR,
-    CONF_PRICE_MARGIN,
     CONF_TARGET_SOC_ENTITY,
     CONF_THRESHOLD_MODE,
     CONF_WINDOW_DAYS,
@@ -64,7 +63,6 @@ from .const import (
     DEFAULT_POLL_INTERVAL,
     DEFAULT_PRICE_CEILING,
     DEFAULT_PRICE_FLOOR,
-    DEFAULT_PRICE_MARGIN,
     DEFAULT_THRESHOLD_MODE,
     DEFAULT_WINDOW_DAYS,
     EFFICIENCY_MAX,
@@ -130,7 +128,6 @@ class ComEdSettings:
     window_days: int
     flat_rate: float
     distribution_rate: float
-    price_margin: float
 
     @classmethod
     def from_options(cls, options: dict) -> ComEdSettings:
@@ -152,7 +149,6 @@ class ComEdSettings:
             distribution_rate=(
                 options.get(CONF_DISTRIBUTION_RATE) or DEFAULT_DISTRIBUTION_RATE
             ),
-            price_margin=options.get(CONF_PRICE_MARGIN, DEFAULT_PRICE_MARGIN),
         )
 
 
@@ -576,7 +572,6 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
                 plan=plan,
                 forecast=forecast,
                 hours_needed=hours_needed,
-                price_margin=self.settings.price_margin,
                 charging=bool(self._charge_state),
                 deadband=deadband,
                 min_off_active=min_off_active,
@@ -599,7 +594,6 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
                     price_ceiling=ceiling,
                     min_soc=self.settings.min_soc,
                     gamma=self.settings.gamma,
-                    price_margin=self.settings.price_margin,
                     departure=departure,
                 )
 

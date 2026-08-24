@@ -30,8 +30,6 @@ CONF_POLL_INTERVAL = "poll_interval"
 CONF_FLAT_RATE = "flat_rate"
 # Fixed distribution ¢/kWh added to the settled supply rate for actual cost.
 CONF_DISTRIBUTION_RATE = "distribution_rate"
-# ¢/kWh tolerance for opportunistic charging around the cheapest hour ahead.
-CONF_PRICE_MARGIN = "price_margin"
 
 # --- Threshold modes ---------------------------------------------------------
 MODE_AUTO = "auto"
@@ -64,8 +62,6 @@ DEFAULT_PRICE_CEILING = 14.0
 DEFAULT_FLAT_RATE = 0.0
 # Distribution ¢/kWh added to the settled supply rate; 0.0 = none.
 DEFAULT_DISTRIBUTION_RATE = 0.0
-# Default ¢/kWh tolerance for opportunistic charging (see CONF_PRICE_MARGIN).
-DEFAULT_PRICE_MARGIN = 1.0
 
 # --- Short-cycle damping (opportunistic ON deadband) -------------------------
 # Trailing window (minutes) of 5-minute points used to gauge price volatility.

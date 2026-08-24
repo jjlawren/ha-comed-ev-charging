@@ -178,45 +178,47 @@ def test_cheapest_hour_ahead_price_none_with_no_future():
     assert cheapest_hour_ahead_price(forecast, NOW) is None
 
 
-# --- opportunistic charging (relative band, no completion) -------------------
+# --- opportunistic charging (reserve cheapest hours, no completion) ----------
 
 
-def test_opportunistic_defers_when_cheaper_hour_beyond_margin():
-    # Below threshold, but a much cheaper hour is ahead (2¢ vs 4¢, margin 1¢).
+def test_opportunistic_defers_when_enough_cheaper_hours_ahead():
+    # Below threshold, but two cheaper hours are ahead and only two are needed,
+    # so the current hour is not among the cheapest -> defer to the trough.
     forecast = _hourly_forecast(4.0, 2.0, 2.0)
-    d = _decide(40, 4.0, forecast=forecast)
+    d = _decide(40, 4.0, forecast=forecast, hours_needed=2)
     assert d.charge_now is False
     assert d.reason == REASON_CHEAPER_LATER
 
 
-def test_opportunistic_charges_within_margin_of_trough():
-    # Cheapest ahead is 3.5¢; the current 4¢ is within the 1¢ margin -> charge.
-    forecast = _hourly_forecast(4.0, 3.5, 6.0)
-    d = _decide(40, 4.0, forecast=forecast)
+def test_opportunistic_charges_when_current_among_cheapest_needed():
+    # Two cheaper hours ahead but three are needed -> the current hour is among
+    # the cheapest three still required, so charge it now.
+    forecast = _hourly_forecast(4.0, 2.0, 2.0)
+    d = _decide(40, 4.0, forecast=forecast, hours_needed=3)
     assert d.charge_now is True
     assert d.reason == REASON_BELOW_THRESHOLD
 
 
 def test_opportunistic_charges_when_no_cheaper_hours_ahead():
     forecast = _hourly_forecast(4.0, 5.0, 6.0)
-    d = _decide(40, 4.0, forecast=forecast)
+    d = _decide(40, 4.0, forecast=forecast, hours_needed=2)
     assert d.charge_now is True
     assert d.reason == REASON_BELOW_THRESHOLD
 
 
-def test_opportunistic_does_not_chase_completion_in_short_window():
-    # Only cheap hours ahead and little time left, but completion is optional:
-    # a pricier current hour still defers rather than scramble to finish.
-    forecast = _hourly_forecast(4.0, 2.0)
-    d = _decide(40, 4.0, forecast=forecast, hours_needed=5)
-    assert d.charge_now is False
-    assert d.reason == REASON_CHEAPER_LATER
+def test_opportunistic_grabs_live_dip_below_every_forecast_hour():
+    # The live price undercuts every remaining forecast hour, so its rank falls
+    # below hours_needed and the unexpected dip is taken at once.
+    forecast = _hourly_forecast(1.5, 5.0, 6.0)
+    d = _decide(40, 1.5, forecast=forecast, hours_needed=5)
+    assert d.charge_now is True
+    assert d.reason == REASON_BELOW_THRESHOLD
 
 
 def test_opportunistic_never_overrides_above_threshold():
     # A spike is rejected as above-threshold regardless of the forecast.
     forecast = _hourly_forecast(40.0, 3.0, 3.0)
-    d = _decide(79, 40.0, forecast=forecast)
+    d = _decide(79, 40.0, forecast=forecast, hours_needed=2)
     assert d.charge_now is False
     assert d.reason == REASON_ABOVE_THRESHOLD
 
@@ -627,6 +629,22 @@ def test_schedule_opportunistic_charges_only_below_threshold():
     assert _charging_ends(schedule) == {base + timedelta(hours=2)}
     assert schedule.charging_hours == 1
     assert schedule.ready_time is None
+
+
+def test_schedule_opportunistic_reserves_cheapest_hours_under_threshold():
+    # Every hour is under T(SOC), so the threshold cap does not choose for us.
+    # The two cheapest hours (1.5¢, 1.6¢) must be reserved even though earlier,
+    # pricier hours are also affordable — no greedy-earliest charging.
+    forecast = _hourly_forecast(2.6, 2.5, 1.5, 1.6, 2.4, 2.5)
+    base = NOW.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    schedule = project_schedule(NOW, forecast, 50.0, 80.0, **_SCHED, **_BAND)
+    assert schedule.mode == MODE_OPPORTUNISTIC
+    assert _charging_ends(schedule) == {
+        base + timedelta(hours=2),  # 1.5¢
+        base + timedelta(hours=3),  # 1.6¢
+    }
+    assert schedule.charging_hours == 2
+    assert schedule.ready_time == base + timedelta(hours=3)
 
 
 def test_schedule_target_reached_is_all_idle():
