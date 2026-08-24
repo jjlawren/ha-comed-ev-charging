@@ -335,6 +335,59 @@ async def test_energy_needed_and_cost_sensors(
     assert float(avg.state) > 0.0
 
 
+async def test_schedule_excludes_unpublished_fallback_hours(
+    hass: HomeAssistant, mock_client
+) -> None:
+    """The charge schedule omits hours carried only by the flat fallback.
+
+    Rate estimates that have not posted yet (e.g. past midnight) would otherwise
+    render as a run of identical rows on the schedule card.
+    """
+    from datetime import timedelta
+
+    from homeassistant.util import dt as dt_util
+
+    from custom_components.comed_ev.optimizer import SOURCE_DAY_OF
+
+    hass.states.async_set("sensor.ev_soc", "20")
+    hass.states.async_set("number.ev_target", "80")
+    coordinator = await _build_coordinator(hass)
+
+    # Publish day-of estimates for the next two whole hours only; every later
+    # hour of the overnight window has no estimate and falls back to the flat
+    # current-hour average.
+    now = dt_util.utcnow()
+    first_end = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    coordinator._dual_today = {
+        first_end: 2.0,
+        first_end + timedelta(hours=1): 2.5,
+    }
+
+    data = coordinator._build_data()
+
+    assert data.schedule is not None
+    hours = data.schedule.hours
+    assert [h.hour_ending for h in hours] == [first_end, first_end + timedelta(hours=1)]
+    assert all(h.source == SOURCE_DAY_OF for h in hours)
+
+
+async def test_schedule_is_absent_when_only_fallback(
+    hass: HomeAssistant, mock_client
+) -> None:
+    """With no published estimates the schedule is empty rather than flat rows."""
+    hass.states.async_set("sensor.ev_soc", "20")
+    hass.states.async_set("number.ev_target", "80")
+    coordinator = await _build_coordinator(hass)
+
+    # Default feeds are empty, so the whole overnight window is fallback-only.
+    assert coordinator._dual_today == {}
+    assert coordinator._day_ahead == {}
+
+    data = coordinator._build_data()
+
+    assert data.schedule is None
+
+
 async def test_target_reached_turns_off(hass: HomeAssistant, mock_client) -> None:
     """At/above target the binary sensor stays off."""
     hass.states.async_set("sensor.ev_soc", "80")
