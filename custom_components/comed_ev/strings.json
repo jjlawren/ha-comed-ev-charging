@@ -82,7 +82,8 @@
       "ceiling_pct": { "name": "Ceiling percentile" },
       "window_days": { "name": "History window" },
       "flat_rate": { "name": "Flat-rate baseline" },
-      "distribution_rate": { "name": "Distribution charge" }
+      "distribution_rate": { "name": "Distribution charge" },
+      "price_margin": { "name": "Opportunistic price margin" }
     }
   },
   "services": {

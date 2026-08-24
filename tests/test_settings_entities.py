@@ -18,6 +18,7 @@ N_FLOOR = "number.comed_ev_charging_price_floor"
 N_CEILING = "number.comed_ev_charging_price_ceiling"
 N_WINDOW = "number.comed_ev_charging_history_window"
 N_FLAT = "number.comed_ev_charging_flat_rate_baseline"
+N_MARGIN = "number.comed_ev_charging_opportunistic_price_margin"
 
 
 def _entry(extra_options: dict | None = None) -> MockConfigEntry:
@@ -127,6 +128,20 @@ async def test_setting_change_is_persisted(
     )
     saved = hass_storage[STORAGE_KEY]["data"]["settings"]
     assert saved["price_floor"] == 6.25
+
+
+async def test_price_margin_change_persists(
+    hass: HomeAssistant, mock_client, hass_storage
+) -> None:
+    """The opportunistic price-margin knob writes through to settings and store."""
+    entry = await _setup(hass)
+    assert hass.states.get(N_MARGIN).state == "1.0"  # DEFAULT_PRICE_MARGIN
+
+    await hass.services.async_call(
+        "number", "set_value", {"entity_id": N_MARGIN, "value": 2.5}, blocking=True
+    )
+    assert entry.runtime_data.settings.price_margin == 2.5
+    assert hass_storage[STORAGE_KEY]["data"]["settings"]["price_margin"] == 2.5
 
 
 async def test_persisted_settings_win_over_options(
