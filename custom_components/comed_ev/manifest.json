@@ -1,6 +1,10 @@
 {
   "domain": "comed_ev",
   "name": "ComEd EV Charging",
+  "after_dependencies": [
+    "frontend",
+    "http"
+  ],
   "codeowners": [
     "@jjlawren"
   ],

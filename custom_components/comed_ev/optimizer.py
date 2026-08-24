@@ -346,6 +346,132 @@ def should_charge_now(
     return decide(True, REASON_BELOW_THRESHOLD)
 
 
+MODE_DEADLINE = "deadline"
+MODE_OPPORTUNISTIC = "opportunistic"
+
+
+@dataclass(frozen=True)
+class ScheduleHour:
+    """One projected forecast hour: its price, provenance, and planned action."""
+
+    hour_ending: datetime
+    price: float
+    source: str
+    charging: bool
+    # SOC (percent) projected at the END of this hour.
+    projected_soc: float
+
+
+@dataclass(frozen=True)
+class Schedule:
+    """A forward projection of the charge decision across the forecast window.
+
+    `hours` is time-ordered. The summary fields fold the same projection:
+    `charging_hours`/`charging_energy_kwh` count the planned-on hours and their
+    wall energy, `ready_time` is the hour-ending at which `target_soc` is first
+    reached (None if the window never reaches it).
+    """
+
+    hours: list[ScheduleHour]
+    mode: str
+    charging_hours: int
+    charging_energy_kwh: float
+    ready_time: datetime | None
+
+
+def project_schedule(
+    now: datetime,
+    forecast: dict[datetime, ForecastHour],
+    current_soc: float,
+    target_soc: float,
+    capacity_kwh: float,
+    charge_rate_kw: float,
+    efficiency: float,
+    *,
+    price_floor: float,
+    price_ceiling: float,
+    min_soc: float = 0.0,
+    gamma: float = 2.5,
+    price_margin: float = 1.0,
+    departure: datetime | None = None,
+) -> Schedule:
+    """Project the charge decision across every forecast hour.
+
+    Walks the forecast in time order and replays `should_charge_now` at each
+    hour, using that hour's forecast price as the decision price and the SOC
+    projected so far. Charging an hour raises the projected SOC by one hour of
+    wall energy at `efficiency` (capped at `target_soc`), which in turn feeds the
+    next hour's decision. This mirrors the live per-tick logic, so the schedule
+    shows what the integration will actually do rather than a separate estimate.
+
+    Deadline mode (a `departure` is given) recomputes the plan and remaining
+    whole-hours-needed at each step, so deferral and the `must_charge` safety net
+    project forward exactly as they fire at runtime.
+    """
+    mode = MODE_DEADLINE if departure is not None else MODE_OPPORTUNISTIC
+    soc = current_soc
+    # SOC gain (percent) from one full hour of charging at the wall rate.
+    soc_gain_per_hour = (
+        charge_rate_kw * efficiency / capacity_kwh * 100.0 if capacity_kwh > 0 else 0.0
+    )
+    hours: list[ScheduleHour] = []
+    charging_hours = 0
+    charging_energy_kwh = 0.0
+    ready_time: datetime | None = None
+
+    for hour in sorted(forecast.values(), key=lambda h: h.hour_ending):
+        # Treat the top of this forecast hour as the decision instant, so the
+        # decision helpers rank it as "now" and later hours as "ahead".
+        sim_now = hour.hour_ending - timedelta(hours=1)
+        plan: ChargePlan | None = None
+        hours_needed: int | None = None
+        if departure is not None:
+            plan = plan_charge(
+                sim_now,
+                departure,
+                soc,
+                target_soc,
+                capacity_kwh,
+                charge_rate_kw,
+                efficiency,
+                forecast,
+            )
+            hours_needed = plan.hours_needed
+        decision = should_charge_now(
+            sim_now,
+            soc,
+            target_soc,
+            hour.price,
+            price_floor=price_floor,
+            price_ceiling=price_ceiling,
+            min_soc=min_soc,
+            gamma=gamma,
+            plan=plan,
+            forecast=forecast,
+            hours_needed=hours_needed,
+            price_margin=price_margin,
+        )
+        charging = decision.charge_now
+        if charging:
+            energy = energy_needed_kwh(soc, target_soc, capacity_kwh, efficiency)
+            charging_energy_kwh += min(charge_rate_kw, energy)
+            soc = min(target_soc, soc + soc_gain_per_hour)
+            charging_hours += 1
+        if ready_time is None and soc >= target_soc:
+            ready_time = hour.hour_ending
+        hours.append(
+            ScheduleHour(hour.hour_ending, hour.price, hour.source, charging, soc)
+        )
+
+    return Schedule(
+        hours=hours,
+        mode=mode,
+        charging_hours=charging_hours,
+        charging_energy_kwh=charging_energy_kwh,
+        ready_time=ready_time,
+    )
+
+
 def build_forecast(
     now: datetime,
     departure: datetime,

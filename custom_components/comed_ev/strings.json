@@ -56,6 +56,7 @@
       "suggested_floor": { "name": "Suggested floor" },
       "suggested_ceiling": { "name": "Suggested ceiling" },
       "projected_end_soc": { "name": "Projected end SOC" },
+      "charge_schedule": { "name": "Charge schedule" },
       "energy_needed": { "name": "Energy needed to target" },
       "estimated_charge_cost": { "name": "Estimated charge cost" },
       "charge_avg_price": { "name": "Estimated charge average price" },

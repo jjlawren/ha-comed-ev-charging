@@ -80,11 +80,13 @@ from .optimizer import (
     ChargeCost,
     ChargeDecision,
     ForecastHour,
+    Schedule,
     build_forecast,
     energy_needed_kwh,
     estimate_charge_cost,
     hour_buckets,
     plan_charge,
+    project_schedule,
     should_charge_now,
 )
 from .session_store import Session, SessionStore
@@ -158,6 +160,9 @@ class ComEdData:
     # Estimated cost of the upcoming charge, None until a forecast is available.
     charge_cost: ChargeCost | None = None
     forecast: dict[datetime, ForecastHour] = field(default_factory=dict)
+    # Forward projection of the charge decision across the forecast window,
+    # None until a forecast and SOC inputs are available.
+    schedule: Schedule | None = None
     # Most recent fully-settled session, None until one has settled.
     last_session: Session | None = None
     # Actual cost ($) of that session: settled supply + distribution, None
@@ -474,6 +479,7 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
         decision: ChargeDecision | None = None
         forecast: dict[datetime, ForecastHour] = {}
         charge_cost: ChargeCost | None = None
+        schedule: Schedule | None = None
         if (
             current_soc is not None
             and target_soc is not None
@@ -531,6 +537,22 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
                 hours_needed=hours_needed,
                 price_margin=self.settings.price_margin,
             )
+            if forecast:
+                schedule = project_schedule(
+                    now,
+                    forecast,
+                    current_soc,
+                    target_soc,
+                    self._capacity_kwh(),
+                    rate,
+                    efficiency,
+                    price_floor=floor,
+                    price_ceiling=ceiling,
+                    min_soc=self.settings.min_soc,
+                    gamma=self.settings.gamma,
+                    price_margin=self.settings.price_margin,
+                    departure=departure,
+                )
 
         return ComEdData(
             live_price=live,
@@ -544,6 +566,7 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
             energy_needed_kwh=energy_needed,
             charge_cost=charge_cost,
             forecast=forecast,
+            schedule=schedule,
             last_session=self._last_session,
             last_session_cost=self._session_total_cost(self._last_session),
             last_session_savings=self._session_savings(self._last_session),
