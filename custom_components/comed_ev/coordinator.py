@@ -92,6 +92,7 @@ from .optimizer import (
     MODE_OPPORTUNISTIC,
     REASON_CHEAPER_LATER,
     REASON_MIN_OFF_LOCKOUT,
+    SOURCE_FALLBACK,
     ChargeCost,
     ChargeDecision,
     ForecastHour,
@@ -620,10 +621,19 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
                 self._lockout_held = True
             self._note_transition(decision, now, volatility)
             self._note_deferral(decision, now)
-            if forecast:
+            # The schedule card is a forward view of published rate estimates, so
+            # drop hours carried only by the flat current-hour fallback (rates
+            # not yet posted, e.g. past midnight) — they would render as a run of
+            # identical rows. Decision and cost above still use the full forecast.
+            published = {
+                end: hour
+                for end, hour in forecast.items()
+                if hour.source != SOURCE_FALLBACK
+            }
+            if published:
                 schedule = project_schedule(
                     now,
-                    forecast,
+                    published,
                     current_soc,
                     target_soc,
                     self._capacity_kwh(),
