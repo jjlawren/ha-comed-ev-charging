@@ -11,6 +11,7 @@
  * `comed_ev.get_transitions`, and renders the response.
  */
 
+const DOMAIN = "comed_ev";
 const CHARGE = "#0b93a6"; // electric teal — charging
 const WARM = "#cf7a1c"; // amber — price / skipped
 const GOOD = "#2b9968"; // green — savings
@@ -98,15 +99,33 @@ function relTime(iso) {
   return `${Math.round(h / 24)}d ago`;
 }
 
+// Find this integration's entity by its unique_id suffix rather than trusting a
+// fixed entity_id. A renamed entity, a slugified device name, or a second
+// config entry all shift the entity_id; the unique_id suffix (see entity.py)
+// and the translation_key stay stable. Falls back to the conventional id.
+function findEntity(hass, suffix) {
+  const registry = hass.entities || {};
+  for (const [entityId, entry] of Object.entries(registry)) {
+    if (entry.platform !== DOMAIN) continue;
+    if (
+      (entry.unique_id && entry.unique_id.endsWith(`_${suffix}`)) ||
+      entry.translation_key === suffix ||
+      entityId.endsWith(`_${suffix}`)
+    ) {
+      return entityId;
+    }
+  }
+  const guess = `sensor.${DOMAIN}_charging_${suffix}`;
+  return hass.states[guess] ? guess : null;
+}
+
 /* ============================ Schedule card ============================ */
 
 class ComEdScheduleCard extends HTMLElement {
   setConfig(config) {
-    this._config = {
-      entity: config.entity || "sensor.comed_ev_charging_charge_schedule",
-      title: config.title || "Charge Schedule",
-      ...config,
-    };
+    // Leave `entity` unset unless the user pins one; it is auto-resolved from
+    // the entity registry at render time (hass is not available here yet).
+    this._config = { title: "Charge Schedule", ...config };
     this._built = false;
   }
 
@@ -122,7 +141,15 @@ class ComEdScheduleCard extends HTMLElement {
   _render() {
     const hass = this._hass;
     if (!hass || !this._config) return;
-    const st = hass.states[this._config.entity];
+
+    // Prefer a pinned entity; otherwise resolve once and cache only on success
+    // so the card recovers if the entity registers after the first render.
+    let entity = this._config.entity;
+    if (!entity) {
+      this._resolved = this._resolved || findEntity(hass, "charge_schedule");
+      entity = this._resolved;
+    }
+    const st = entity ? hass.states[entity] : undefined;
 
     if (!this._built) {
       this.attachShadow({ mode: "open" });
@@ -131,7 +158,9 @@ class ComEdScheduleCard extends HTMLElement {
       this._built = true;
     }
     if (!st) {
-      this._card.innerHTML = `<div class="empty">Entity <code>${this._config.entity}</code> not found.</div>`;
+      this._card.innerHTML = entity
+        ? `<div class="empty">Entity <code>${entity}</code> not found.</div>`
+        : `<div class="empty">No ComEd charge-schedule sensor found.</div>`;
       return;
     }
 
