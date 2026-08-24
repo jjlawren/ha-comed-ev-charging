@@ -6,7 +6,7 @@ a required State-of-Charge (SOC) by an optional departure time.
 
 It is **hardware-agnostic**: the component *reads* SOC / target / rate from entities
 you already have (e.g. a Rivian, Tesla, or Wallbox integration) and *publishes* a
-`binary_sensor.comed_ev_charge_now` signal plus price and plan sensors. You wire the
+`binary_sensor.comed_ev_charging_charge_now` signal plus price and plan sensors. You wire the
 charger to that signal with your own automation — the component never commands the
 charger directly.
 
@@ -47,21 +47,21 @@ number entities.
 
 | Entity | Description |
 | --- | --- |
-| `binary_sensor.comed_ev_charge_now` | The automation trigger. Attributes: `reason`, `live_price`, `threshold`, and (deadline mode) `slack_hours`. |
-| `sensor.comed_ev_current_price` | Live 5-minute price (¢/kWh). |
-| `sensor.comed_ev_hourly_price` | Current-hour average price. |
-| `sensor.comed_ev_charge_threshold` | Current `T(SOC)`; attributes: floor/ceiling, mode. |
-| `sensor.comed_ev_projected_end_soc` | Deadline mode only: projected SOC at departure. |
-| `sensor.comed_ev_charge_schedule` | Charging hours ahead (state). Attributes: `hours` (per-hour `hour_ending`, `price`, `source`, `charging`, `projected_soc`), `mode` (`deadline`/`opportunistic`), `ready_time`, `charging_energy_kwh`, `estimated_cost`. Backs the schedule card; `hours` is excluded from the recorder. |
-| `sensor.comed_ev_energy_needed_to_target` | Wall energy (kWh) to reach target SOC (target−current, divided by efficiency). |
-| `sensor.comed_ev_estimated_charge_cost` | Estimated cost ($) of the upcoming charge, priced over the cheapest forecast hours plus the fixed distribution rate. Window is now→departure (deadline mode) or now→next 6 AM Central otherwise. Attributes: `energy_kwh`, `average_price` (supply-only $/kWh), `supply_cost`, `distribution_cost`, `hours_used`. |
-| `sensor.comed_ev_estimated_charge_average_price` | Estimated supply-only average $/kWh for that charge (excludes the distribution rate). |
-| `sensor.comed_ev_suggested_floor` / `_ceiling` | Analytics recommendations (disabled by default). |
-| `sensor.comed_ev_measured_efficiency` | Measured vehicle/wall ratio when energy meters are set (diagnostic). |
-| `sensor.comed_ev_last_session_cost` | Actual cost ($) of the last charge session: ComEd settled *supply* prices plus the fixed distribution rate. Attributes: `energy_kwh`, `cents_per_kwh` (effective), `supply_cost`, `distribution_cost`, `energy_source` (`meter`/`soc`), `started`, `ended`. |
-| `sensor.comed_ev_last_session_savings` | Savings ($) of that session vs. the flat-rate baseline. Only present when a flat rate is set in options. |
-| `sensor.comed_ev_last_session_energy` | Energy (kWh) delivered in the last charge session. |
-| `sensor.comed_ev_last_session_effective_rate` | Effective rate (¢/kWh) of the last session: settled cost divided by delivered energy. |
+| `binary_sensor.comed_ev_charging_charge_now` | The automation trigger. Attributes: `reason`, `live_price`, `threshold`, and (deadline mode) `slack_hours`. |
+| `sensor.comed_ev_charging_5_minute_spot_price` | Live 5-minute price (¢/kWh). |
+| `sensor.comed_ev_charging_current_hour_average_price` | Current-hour average price. |
+| `sensor.comed_ev_charging_charge_threshold` | Current `T(SOC)`; attributes: floor/ceiling, mode. |
+| `sensor.comed_ev_charging_projected_end_soc` | Deadline mode only: projected SOC at departure. |
+| `sensor.comed_ev_charging_charge_schedule` | Charging hours ahead (state). Attributes: `hours` (per-hour `hour_ending`, `price`, `source`, `charging`, `projected_soc`), `mode` (`deadline`/`opportunistic`), `ready_time`, `charging_energy_kwh`, `estimated_cost`. Backs the schedule card; `hours` is excluded from the recorder. |
+| `sensor.comed_ev_charging_energy_needed_to_target` | Wall energy (kWh) to reach target SOC (target−current, divided by efficiency). |
+| `sensor.comed_ev_charging_estimated_charge_cost` | Estimated cost ($) of the upcoming charge, priced over the cheapest forecast hours plus the fixed distribution rate. Window is now→departure (deadline mode) or now→next 6 AM Central otherwise. Attributes: `energy_kwh`, `average_price` (supply-only $/kWh), `supply_cost`, `distribution_cost`, `hours_used`. |
+| `sensor.comed_ev_charging_estimated_charge_average_price` | Estimated supply-only average $/kWh for that charge (excludes the distribution rate). |
+| `sensor.comed_ev_charging_suggested_floor` / `_ceiling` | Analytics recommendations (disabled by default). |
+| `sensor.comed_ev_charging_measured_efficiency` | Measured vehicle/wall ratio when energy meters are set (diagnostic). |
+| `sensor.comed_ev_charging_last_session_cost` | Actual cost ($) of the last charge session: ComEd settled *supply* prices plus the fixed distribution rate. Attributes: `energy_kwh`, `cents_per_kwh` (effective), `supply_cost`, `distribution_cost`, `energy_source` (`meter`/`soc`), `started`, `ended`. |
+| `sensor.comed_ev_charging_last_session_savings` | Savings ($) of that session vs. the flat-rate baseline. Only present when a flat rate is set in options. |
+| `sensor.comed_ev_charging_last_session_energy` | Energy (kWh) delivered in the last charge session. |
+| `sensor.comed_ev_charging_last_session_effective_rate` | Effective rate (¢/kWh) of the last session: settled cost divided by delivered energy. |
 
 `reason` is one of `below_threshold` (opportunistic, price acceptable and near the
 cheapest hour left), `above_threshold`, `target_reached`, `cheaper_later` (deferring for
@@ -151,10 +151,10 @@ automation:
   - alias: "EV: charge on ComEd cheap signal"
     trigger:
       - platform: state
-        entity_id: binary_sensor.comed_ev_charge_now
+        entity_id: binary_sensor.comed_ev_charging_charge_now
     action:
       - choose:
-          - conditions: "{{ is_state('binary_sensor.comed_ev_charge_now', 'on') }}"
+          - conditions: "{{ is_state('binary_sensor.comed_ev_charging_charge_now', 'on') }}"
             sequence:
               - service: switch.turn_on
                 target: { entity_id: switch.ev_charger }
