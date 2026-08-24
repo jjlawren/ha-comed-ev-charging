@@ -6,8 +6,10 @@ import asyncio
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta
 from functools import partial
+import json
 import logging
 from math import ceil
+import statistics
 
 from comed_hourly_pricing import Client
 from comed_hourly_pricing.const import CENTRAL
@@ -49,6 +51,9 @@ from .const import (
     CONF_TARGET_SOC_ENTITY,
     CONF_THRESHOLD_MODE,
     CONF_WINDOW_DAYS,
+    DEADBAND_K,
+    DEADBAND_MAX,
+    DEADBAND_MIN,
     DEFAULT_CEILING_PCT,
     DEFAULT_DISTRIBUTION_RATE,
     DEFAULT_EFFICIENCY,
@@ -66,7 +71,10 @@ from .const import (
     EFFICIENCY_MIN,
     EFFICIENCY_MIN_SAMPLE_KWH,
     ENERGY_DECAY_PER_DAY,
+    EVENT_CHARGE_STARTED,
+    EVENT_CHARGE_STOPPED,
     HOURLY_FEED_INTERVAL,
+    MIN_OFF_SECONDS,
     MODE_AUTO,
     MODE_MANUAL,
     NEXT_DAY_PUBLISH_HOUR,
@@ -75,13 +83,19 @@ from .const import (
     SETTLE_INTERVAL_SECONDS,
     STORAGE_KEY,
     STORAGE_VERSION,
+    TRANSITION_RETENTION,
+    VOLATILITY_WINDOW_MINUTES,
 )
 from .optimizer import (
+    MODE_DEADLINE,
+    MODE_OPPORTUNISTIC,
+    REASON_MIN_OFF_LOCKOUT,
     ChargeCost,
     ChargeDecision,
     ForecastHour,
     Schedule,
     build_forecast,
+    clamp,
     energy_needed_kwh,
     estimate_charge_cost,
     hour_buckets,
@@ -232,6 +246,20 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
         # a session already in progress when the process (re)starts.
         self._prev_charging: bool | None = None
         self._session: _OpenSession | None = None
+        # Last emitted charge_now, driving both the opportunistic ON hysteresis
+        # (see should_charge_now `charging`) and edge detection for transitions.
+        # None until the first decision, so no synthetic edge fires at startup.
+        self._charge_state: bool | None = None
+        # When charging last stopped; gates the minimum-off-time lockout. Cleared
+        # on restart, so no stale lockout survives a process restart.
+        self._last_off_utc: datetime | None = None
+        # True once the lockout has actually blocked a would-be ON since the last
+        # stop; stamped onto the next start transition, then reset.
+        self._lockout_held: bool = False
+        # Most recent volatility (sigma) and ON deadband, surfaced in diagnostics
+        # and stamped onto each recorded transition.
+        self._last_volatility: float = 0.0
+        self._last_deadband: float = 0.0
         # Cached most-recent settled session, refreshed by the settle pass.
         self._last_session: Session | None = None
         # Whether the one-time startup settle pass has run.
@@ -523,8 +551,21 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
             hours_needed = (
                 ceil(energy_needed / rate) if energy_needed and rate > 0 else None
             )
+            # Volatility-scaled ON deadband damps short-cycling around the SOC
+            # threshold (opportunistic mode only); the current charge state makes
+            # it asymmetric so a spike still releases at once.
+            volatility = self._price_volatility(now)
+            deadband = clamp(DEADBAND_K * volatility, DEADBAND_MIN, DEADBAND_MAX)
+            self._last_volatility = volatility
+            self._last_deadband = deadband
+            # Rate-limit re-engaging after a stop (opportunistic only); OFF and
+            # already-charging runs are unaffected inside the optimizer.
+            min_off_active = (
+                self._last_off_utc is not None
+                and (now - self._last_off_utc) < timedelta(seconds=MIN_OFF_SECONDS)
+            )
             decision = should_charge_now(
-                dt_util.utcnow(),
+                now,
                 current_soc,
                 target_soc,
                 decision_price,
@@ -536,7 +577,15 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
                 forecast=forecast,
                 hours_needed=hours_needed,
                 price_margin=self.settings.price_margin,
+                charging=bool(self._charge_state),
+                deadband=deadband,
+                min_off_active=min_off_active,
             )
+            if decision.reason == REASON_MIN_OFF_LOCKOUT:
+                # A would-be ON was actually held; remember it for the eventual
+                # start edge, so the record marks a lockout-delayed start.
+                self._lockout_held = True
+            self._note_transition(decision, now, volatility)
             if forecast:
                 schedule = project_schedule(
                     now,
@@ -721,6 +770,149 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
             )
             return wall, "soc"
         return 0.0, "soc"
+
+    # --- charge transitions --------------------------------------------------
+
+    def _price_volatility(self, now: datetime) -> float:
+        """Population stddev (¢/kWh) of the recent 5-minute prices.
+
+        Measured over a trailing window rather than the current calendar-hour
+        bucket, which is too sparse early in an hour to give a stable spread.
+        0.0 with fewer than two points. Feeds both the ON deadband and the
+        recorded transition context.
+        """
+        cutoff = now - timedelta(minutes=VOLATILITY_WINDOW_MINUTES)
+        prices = [p for ts, p in self._history if ts >= cutoff]
+        if len(prices) < 2:
+            return 0.0
+        return statistics.pstdev(prices)
+
+    @callback
+    def _note_transition(
+        self, decision: ChargeDecision, now: datetime, volatility: float
+    ) -> None:
+        """Detect a charge_now edge, then log it, fire an event, and persist it.
+
+        `_charge_state` tracks the last emitted decision across every publish
+        (polls and input-change republishes), so an edge is caught wherever it
+        happens. The first observation only seeds the state — no synthetic
+        startup edge — mirroring the session tracker. The durable record goes to
+        the integration-owned SQLite store to keep the HA recorder small; the
+        bus event stays lean for live automations and the logbook.
+        """
+        prev = self._charge_state
+        self._charge_state = decision.charge_now
+        if prev is None or decision.charge_now == prev:
+            return
+
+        if decision.charge_now:
+            # A start consumes any lockout that held it; capture then reset.
+            lockout_held = self._lockout_held
+        else:
+            # A stop opens a fresh min-off window: no lockout has held yet.
+            self._last_off_utc = now
+            lockout_held = False
+        self._lockout_held = False
+
+        mode = MODE_DEADLINE if decision.plan is not None else MODE_OPPORTUNISTIC
+        _LOGGER.info(
+            "charge %s (%s): price=%.2f on_threshold=%.2f T=%.2f delta=%.2f"
+            " sigma=%.2f mode=%s%s",
+            "START" if decision.charge_now else "STOP",
+            decision.reason,
+            decision.decision_price,
+            decision.on_threshold,
+            decision.threshold,
+            decision.deadband,
+            volatility,
+            mode,
+            " lockout-held" if lockout_held else "",
+        )
+        payload = {
+            "charging": decision.charge_now,
+            "reason": decision.reason,
+            "mode": mode,
+            "decision_price": round(decision.decision_price, 2),
+            "threshold": round(decision.threshold, 2),
+            "on_threshold": round(decision.on_threshold, 2),
+            "deadband": round(decision.deadband, 2),
+            "volatility": round(volatility, 2),
+            "lockout_held": lockout_held,
+        }
+        event = EVENT_CHARGE_STARTED if decision.charge_now else EVENT_CHARGE_STOPPED
+        self.hass.bus.async_fire(event, payload)
+        self.config_entry.async_create_background_task(
+            self.hass,
+            self._async_record_transition(decision, now, volatility, mode, lockout_held),
+            "comed_ev_transition",
+        )
+
+    async def _async_record_transition(
+        self,
+        decision: ChargeDecision,
+        now: datetime,
+        volatility: float,
+        mode: str,
+        lockout_held: bool,
+    ) -> None:
+        """Persist one transition row to the SQLite store (off the event loop)."""
+        context = asdict(decision)
+        context["volatility"] = volatility
+        await self.hass.async_add_executor_job(
+            partial(
+                self._session_store.insert_transition,
+                ts_utc=now,
+                charging=decision.charge_now,
+                reason=decision.reason,
+                mode=mode,
+                decision_price=decision.decision_price,
+                threshold=decision.threshold,
+                on_threshold=decision.on_threshold,
+                deadband=decision.deadband,
+                volatility=volatility,
+                lockout_held=lockout_held,
+                context_json=json.dumps(context, default=str),
+                retention=TRANSITION_RETENTION,
+            )
+        )
+
+    async def async_get_transitions(self, limit: int) -> list[dict]:
+        """Return recent transitions (newest first) for diagnostics and the card.
+
+        Flattens a few values out of the stored decision context so consumers
+        get the deadline plan (`slack_hours`/`hours_needed`) and the opportunistic
+        `min_ahead` without parsing `context_json` themselves.
+        """
+        transitions = await self.hass.async_add_executor_job(
+            partial(self._session_store.list_transitions, limit=limit)
+        )
+        rows: list[dict] = []
+        for t in transitions:
+            context = {}
+            if t.context_json:
+                try:
+                    context = json.loads(t.context_json)
+                except (ValueError, TypeError):
+                    context = {}
+            plan = context.get("plan") or {}
+            rows.append(
+                {
+                    "ts": t.ts_utc.isoformat(),
+                    "charging": t.charging,
+                    "reason": t.reason,
+                    "mode": t.mode,
+                    "decision_price": t.decision_price,
+                    "threshold": t.threshold,
+                    "on_threshold": t.on_threshold,
+                    "deadband": t.deadband,
+                    "volatility": t.volatility,
+                    "lockout_held": t.lockout_held,
+                    "min_ahead": context.get("min_ahead"),
+                    "slack_hours": plan.get("slack_hours"),
+                    "hours_needed": plan.get("hours_needed"),
+                }
+            )
+        return rows
 
     async def _async_settle_costs(self) -> None:
         """Backfill settled prices and recompute cost for now-settled sessions."""

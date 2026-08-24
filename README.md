@@ -82,6 +82,14 @@ The `comed_ev.get_sessions` service returns the recorded sessions (optional `sta
 `end` bounds) with energy, settled cost, ¢/kWh, and savings — use it for reports or
 automations.
 
+The `comed_ev.get_transitions` service returns the recent `charge_now` on/off edges
+(optional `limit`, newest first), each with the decision context that produced it —
+`reason`, `decision_price`, `threshold`, `on_threshold`, `deadband`, and `volatility`.
+Every edge also fires a lean `comed_ev_charge_started` / `comed_ev_charge_stopped`
+event (Logbook, automations) and is logged; the durable history lives in the
+integration's own SQLite store, off the HA recorder. Use it to see *why* charging
+started or stopped.
+
 ## Dashboard cards
 
 Two Lovelace cards ship with the integration and load automatically — no manual
@@ -107,6 +115,18 @@ distribution rate and flat-rate baseline set in options (see above).
 type: custom:comed-ev-history-card
 # title: Recent Charges
 # days: 14   # look-back window
+```
+
+**Charge Activity** — a timeline of recent `charge_now` on/off transitions, each with
+the reason and the operands that produced it: a price-vs-threshold gauge (price against
+the ON bar `T − δ` and the threshold `T`), plus `σ`, `δ`, and mode. A start held by the
+minimum-off lockout is annotated with how long it waited, and the footer counts cycles
+today. Calls the `comed_ev.get_transitions` service.
+
+```yaml
+type: custom:comed-ev-activity-card
+# title: Charge Activity
+# limit: 25   # most recent transitions
 ```
 
 The schedule card branches on `mode`: it shows a departure/ready-by summary in deadline

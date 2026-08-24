@@ -16,11 +16,20 @@ import voluptuous as vol
 from .const import DOMAIN
 
 SERVICE_GET_SESSIONS = "get_sessions"
+SERVICE_GET_TRANSITIONS = "get_transitions"
 
 _GET_SESSIONS_SCHEMA = vol.Schema(
     {
         vol.Optional("start"): cv.datetime,
         vol.Optional("end"): cv.datetime,
+    }
+)
+
+_GET_TRANSITIONS_SCHEMA = vol.Schema(
+    {
+        vol.Optional("limit", default=50): vol.All(
+            vol.Coerce(int), vol.Range(min=1, max=500)
+        ),
     }
 )
 
@@ -49,11 +58,25 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         )
         return {"sessions": sessions}
 
+    async def _get_transitions(call: ServiceCall) -> ServiceResponse:
+        coordinator = _loaded_coordinator(hass)
+        if coordinator is None:
+            raise ServiceValidationError("No loaded ComEd EV Charging entry")
+        transitions = await coordinator.async_get_transitions(call.data["limit"])
+        return {"transitions": transitions}
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_GET_SESSIONS,
         _get_sessions,
         schema=_GET_SESSIONS_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_GET_TRANSITIONS,
+        _get_transitions,
+        schema=_GET_TRANSITIONS_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
 
@@ -62,3 +85,4 @@ def async_unload_services(hass: HomeAssistant) -> None:
     """Remove the domain services once no loaded entry remains."""
     if _loaded_coordinator(hass) is None:
         hass.services.async_remove(DOMAIN, SERVICE_GET_SESSIONS)
+        hass.services.async_remove(DOMAIN, SERVICE_GET_TRANSITIONS)

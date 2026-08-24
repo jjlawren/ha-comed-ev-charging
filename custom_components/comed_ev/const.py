@@ -67,6 +67,37 @@ DEFAULT_DISTRIBUTION_RATE = 0.0
 # Default ¢/kWh tolerance for opportunistic charging (see CONF_PRICE_MARGIN).
 DEFAULT_PRICE_MARGIN = 1.0
 
+# --- Short-cycle damping (opportunistic ON deadband) -------------------------
+# Trailing window (minutes) of 5-minute points used to gauge price volatility.
+VOLATILITY_WINDOW_MINUTES = 60
+# Opportunistic ON deadband = clamp(DEADBAND_K * sigma, DEADBAND_MIN,
+# DEADBAND_MAX), in ¢/kWh. Turning ON requires the price this far below the SOC
+# threshold; staying ON only needs it under the threshold itself, so a genuine
+# rise still releases immediately (no intra-hour trap). Scaling by recent
+# volatility keeps the band just above the noise: calm prices -> tight band and
+# fast response, noisy prices -> wide band and no chatter.
+DEADBAND_K = 1.0
+DEADBAND_MIN = 0.2
+DEADBAND_MAX = 3.0
+
+# Minimum time (seconds) charging must stay OFF before an opportunistic ON is
+# allowed again. OFF itself is never delayed, so a spike is escaped instantly;
+# the lockout only caps how fast charging may re-engage, bounding cycle rate and
+# protecting the EVSE contactor. Not applied in deadline mode (must_charge must
+# never be blocked). In-memory only — a restart clears any active lockout.
+MIN_OFF_SECONDS = 600
+
+# --- Charge transitions ------------------------------------------------------
+# Fired on the HA event bus when charge_now flips. The durable, queryable record
+# lives in the session SQLite store (outside the recorder), so these events stay
+# lean and rare (edges only) to keep the recorder small.
+EVENT_CHARGE_STARTED = f"{DOMAIN}_charge_started"
+EVENT_CHARGE_STOPPED = f"{DOMAIN}_charge_stopped"
+# Rows of transition history kept in SQLite; older rows are pruned on insert.
+TRANSITION_RETENTION = 500
+# How many recent transitions the diagnostics dump surfaces.
+DIAGNOSTICS_TRANSITIONS = 20
+
 # --- Storage -----------------------------------------------------------------
 STORAGE_VERSION = 1
 STORAGE_KEY = "comed_ev.history"

@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 import os
 import sqlite3
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS session (
@@ -37,6 +37,23 @@ CREATE TABLE IF NOT EXISTS settled_price (
     hour_ending_utc TEXT PRIMARY KEY,
     price_cents     REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS transition (
+    id             INTEGER PRIMARY KEY,
+    ts_utc         TEXT NOT NULL,
+    charging       INTEGER NOT NULL,
+    reason         TEXT NOT NULL,
+    mode           TEXT,
+    decision_price REAL,
+    threshold      REAL,
+    on_threshold   REAL,
+    deadband       REAL,
+    volatility     REAL,
+    lockout_held   INTEGER NOT NULL DEFAULT 0,
+    context_json   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_transition_ts ON transition(ts_utc);
 """
 
 
@@ -53,6 +70,30 @@ class Session:
     energy_source: str  # 'meter' or 'soc'
     settled_cost_cents: float | None
     settled_complete: bool
+
+
+@dataclass(frozen=True)
+class Transition:
+    """One charge_now edge with the decision context that produced it.
+
+    The durable troubleshooting record: it captures the operands compared at the
+    instant the switch flipped, so a start or stop can be explained after the
+    fact without the HA recorder. `context_json` carries the full decision dump
+    for anything not promoted to its own column.
+    """
+
+    id: int
+    ts_utc: datetime
+    charging: bool
+    reason: str
+    mode: str | None
+    decision_price: float | None
+    threshold: float | None
+    on_threshold: float | None
+    deadband: float | None
+    volatility: float | None
+    lockout_held: bool
+    context_json: str | None
 
 
 def _iso(value: datetime) -> str:
@@ -86,9 +127,11 @@ class SessionStore:
             os.makedirs(parent, exist_ok=True)
         with self._connect() as conn:
             version = conn.execute("PRAGMA user_version").fetchone()[0]
+            # Every schema object uses IF NOT EXISTS, so replaying the full
+            # script additively upgrades an older DB (v1 -> v2 gains the
+            # `transition` table). Only stamp the version afterwards.
             conn.executescript(_SCHEMA)
             if version < SCHEMA_VERSION:
-                # No historical migrations yet; stamp the current version.
                 conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     # --- sessions ------------------------------------------------------------
@@ -175,6 +218,68 @@ class SessionStore:
             ).fetchall()
         return [_row_to_session(row) for row in rows]
 
+    # --- transitions ---------------------------------------------------------
+    def insert_transition(
+        self,
+        *,
+        ts_utc: datetime,
+        charging: bool,
+        reason: str,
+        mode: str | None = None,
+        decision_price: float | None = None,
+        threshold: float | None = None,
+        on_threshold: float | None = None,
+        deadband: float | None = None,
+        volatility: float | None = None,
+        lockout_held: bool = False,
+        context_json: str | None = None,
+        retention: int | None = None,
+    ) -> int:
+        """Record a charge_now edge; return its id.
+
+        With `retention` set, prune all but the newest `retention` rows after
+        the insert so the table stays bounded (transitions are rare, but this
+        caps a pathological chatter run).
+        """
+        with self._connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO transition ("
+                " ts_utc, charging, reason, mode, decision_price, threshold,"
+                " on_threshold, deadband, volatility, lockout_held, context_json"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    _iso(ts_utc),
+                    1 if charging else 0,
+                    reason,
+                    mode,
+                    decision_price,
+                    threshold,
+                    on_threshold,
+                    deadband,
+                    volatility,
+                    1 if lockout_held else 0,
+                    context_json,
+                ),
+            )
+            if retention is not None:
+                # Keep the newest `retention` rows; the OFFSET boundary is the
+                # newest row to drop (NULL when fewer exist -> deletes nothing).
+                conn.execute(
+                    "DELETE FROM transition WHERE id <= ("
+                    " SELECT id FROM transition ORDER BY id DESC LIMIT 1 OFFSET ?)",
+                    (retention,),
+                )
+            assert cur.lastrowid is not None
+            return cur.lastrowid
+
+    def list_transitions(self, limit: int = 20) -> list[Transition]:
+        """Return the most recent transitions, newest first."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM transition ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [_row_to_transition(row) for row in rows]
+
     # --- settled prices ------------------------------------------------------
     def upsert_settled_prices(self, prices: Mapping[datetime, float]) -> None:
         """Insert or replace settled hour-ending prices (¢/kWh)."""
@@ -202,6 +307,23 @@ class SessionStore:
                 keys,
             ).fetchall()
         return {_parse(row["hour_ending_utc"]): row["price_cents"] for row in rows}
+
+
+def _row_to_transition(row: sqlite3.Row) -> Transition:
+    return Transition(
+        id=row["id"],
+        ts_utc=_parse(row["ts_utc"]),
+        charging=bool(row["charging"]),
+        reason=row["reason"],
+        mode=row["mode"],
+        decision_price=row["decision_price"],
+        threshold=row["threshold"],
+        on_threshold=row["on_threshold"],
+        deadband=row["deadband"],
+        volatility=row["volatility"],
+        lockout_held=bool(row["lockout_held"]),
+        context_json=row["context_json"],
+    )
 
 
 def _row_to_session(row: sqlite3.Row) -> Session:
