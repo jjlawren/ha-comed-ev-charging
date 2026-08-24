@@ -362,7 +362,7 @@ class ComEdHistoryCard extends HTMLElement {
         <div class="twrap">
           <table>
             <thead><tr>
-              <th>Session</th><th>kWh</th><th>Cost</th><th>Supply<br>¢/kWh</th><th>Saved</th><th>SOC</th>
+              <th>Session</th><th>kWh</th><th>Total<br>Cost</th><th>Supply<br>¢/kWh</th><th>Saved</th><th>SOC</th>
             </tr></thead>
             <tbody>${trs}</tbody>
           </table>
