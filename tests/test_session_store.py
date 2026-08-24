@@ -170,3 +170,45 @@ def test_transition_retention_prunes_oldest(store):
     rows = store.list_transitions(limit=100)
     assert len(rows) == 3  # only the newest three survive
     assert [r.ts_utc for r in rows] == [_dt(5), _dt(4), _dt(3)]
+
+
+def test_deferral_insert_and_list_newest_first(store):
+    store.insert_deferral(
+        started_utc=_dt(1), ended_utc=_dt(2), reason="cheaper_later",
+        mode="opportunistic", decision_price=6.2, min_ahead=4.1,
+        ended_reason="below_threshold",
+    )
+    store.insert_deferral(
+        started_utc=_dt(3), ended_utc=_dt(5), reason="cheaper_later",
+        mode="deadline", decision_price=7.0, min_ahead=None,
+        ended_reason="above_threshold",
+    )
+    rows = store.list_deferrals()
+    assert [r.started_utc for r in rows] == [_dt(3), _dt(1)]  # newest first
+    latest = rows[0]
+    assert latest.mode == "deadline"
+    assert latest.decision_price == 7.0
+    assert latest.min_ahead is None
+    assert latest.ended_reason == "above_threshold"
+    assert latest.ended_utc == _dt(5)
+    assert latest.started_utc.tzinfo == UTC
+    assert rows[1].min_ahead == 4.1
+
+
+def test_deferral_list_respects_limit(store):
+    for h in range(1, 6):
+        store.insert_deferral(
+            started_utc=_dt(h), ended_utc=_dt(h), reason="cheaper_later"
+        )
+    assert len(store.list_deferrals(limit=2)) == 2
+
+
+def test_deferral_retention_prunes_oldest(store):
+    for h in range(6):
+        store.insert_deferral(
+            started_utc=_dt(h), ended_utc=_dt(h), reason="cheaper_later",
+            retention=3,
+        )
+    rows = store.list_deferrals(limit=100)
+    assert len(rows) == 3  # only the newest three survive
+    assert [r.started_utc for r in rows] == [_dt(5), _dt(4), _dt(3)]

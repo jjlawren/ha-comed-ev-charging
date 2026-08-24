@@ -779,6 +779,170 @@ async def test_get_transitions_service(hass: HomeAssistant, mock_client) -> None
     assert rows[1]["min_ahead"] == 3.5
 
 
+def _reason_decision(reason: str, *, price: float = 6.2, min_ahead: float | None = 4.1):
+    """A minimal ChargeDecision carrying just what `_note_deferral` reads."""
+    from custom_components.comed_ev.optimizer import ChargeDecision
+
+    return ChargeDecision(
+        charge_now=False,
+        reason=reason,
+        decision_price=price,
+        threshold=5.0,
+        urgency=0.5,
+        gamma=2.5,
+        min_ahead=min_ahead,
+    )
+
+
+async def test_deferral_records_one_row_per_hold(
+    hass: HomeAssistant, mock_client
+) -> None:
+    """A hold that spans many polls records exactly one deferral, on close."""
+    from datetime import UTC, datetime, timedelta
+
+    hass.states.async_set("sensor.ev_soc", "20")
+    hass.states.async_set("number.ev_target", "80")
+    coordinator = await _build_coordinator(hass)
+    coordinator._deferral = None  # ignore any episode opened by setup
+    t0 = datetime(2026, 8, 20, 22, 0, tzinfo=UTC)
+
+    # Entry operands (price, min_ahead) captured from the first holding tick;
+    # later ticks wobble but must not overwrite them or write a row.
+    coordinator._note_deferral(_reason_decision("cheaper_later", price=6.2, min_ahead=4.1), t0)
+    for m in (5, 10, 30, 55):
+        coordinator._note_deferral(
+            _reason_decision("cheaper_later", price=6.2 + m * 0.01, min_ahead=4.0),
+            t0 + timedelta(minutes=m),
+        )
+    # Nothing written while the hold is live.
+    assert await hass.async_add_executor_job(coordinator._session_store.list_deferrals) == []
+
+    # Hold releases into a charge, then stays released past the grace window.
+    coordinator._note_deferral(_reason_decision("below_threshold"), t0 + timedelta(minutes=60))
+    coordinator._note_deferral(_reason_decision("below_threshold"), t0 + timedelta(minutes=75))
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    rows = await hass.async_add_executor_job(coordinator._session_store.list_deferrals)
+    assert len(rows) == 1
+    d = rows[0]
+    assert d.reason == "cheaper_later"
+    assert d.mode == "opportunistic"
+    assert d.decision_price == 6.2  # entry value, not the wobble
+    assert d.min_ahead == 4.1
+    assert d.ended_reason == "below_threshold"
+    assert d.started_utc == t0
+    assert d.ended_utc == t0 + timedelta(minutes=60)  # the true end, not +grace
+    assert coordinator._deferral is None
+
+
+async def test_deferral_grace_coalesces_a_boundary_flap(
+    hass: HomeAssistant, mock_client
+) -> None:
+    """A brief release inside the grace window keeps one episode, not two."""
+    from datetime import UTC, datetime, timedelta
+
+    hass.states.async_set("sensor.ev_soc", "20")
+    hass.states.async_set("number.ev_target", "80")
+    coordinator = await _build_coordinator(hass)
+    coordinator._deferral = None  # ignore any episode opened by setup
+    t0 = datetime(2026, 8, 20, 22, 0, tzinfo=UTC)
+
+    coordinator._note_deferral(_reason_decision("cheaper_later"), t0)
+    coordinator._note_deferral(_reason_decision("cheaper_later"), t0 + timedelta(minutes=30))
+    # Momentary release (the cheaper_hours_ahead boundary wobble)...
+    coordinator._note_deferral(_reason_decision("above_threshold"), t0 + timedelta(minutes=40))
+    # ...re-asserts within the grace window, so the episode continues.
+    coordinator._note_deferral(_reason_decision("cheaper_later"), t0 + timedelta(minutes=45))
+    # Final release, then grace elapses.
+    coordinator._note_deferral(_reason_decision("below_threshold"), t0 + timedelta(minutes=90))
+    coordinator._note_deferral(_reason_decision("below_threshold"), t0 + timedelta(minutes=105))
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    rows = await hass.async_add_executor_job(coordinator._session_store.list_deferrals)
+    assert len(rows) == 1  # one span, not fragmented by the flap
+    assert rows[0].started_utc == t0
+    assert rows[0].ended_utc == t0 + timedelta(minutes=90)
+    assert rows[0].ended_reason == "below_threshold"
+
+
+async def test_deferral_below_floor_is_dropped(
+    hass: HomeAssistant, mock_client
+) -> None:
+    """A hold shorter than the minimum duration lands no row."""
+    from datetime import UTC, datetime, timedelta
+
+    hass.states.async_set("sensor.ev_soc", "20")
+    hass.states.async_set("number.ev_target", "80")
+    coordinator = await _build_coordinator(hass)
+    coordinator._deferral = None  # ignore any episode opened by setup
+    t0 = datetime(2026, 8, 20, 22, 0, tzinfo=UTC)
+
+    coordinator._note_deferral(_reason_decision("cheaper_later"), t0)
+    coordinator._note_deferral(_reason_decision("below_threshold"), t0 + timedelta(minutes=5))
+    coordinator._note_deferral(_reason_decision("below_threshold"), t0 + timedelta(minutes=20))
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+    rows = await hass.async_add_executor_job(coordinator._session_store.list_deferrals)
+    assert rows == []  # 5-minute hold is below the floor
+    assert coordinator._deferral is None
+
+
+async def test_deferral_ignores_non_reserve_reasons(
+    hass: HomeAssistant, mock_client
+) -> None:
+    """Only cheaper_later opens an episode; other OFF reasons never do."""
+    from datetime import UTC, datetime, timedelta
+
+    hass.states.async_set("sensor.ev_soc", "20")
+    hass.states.async_set("number.ev_target", "80")
+    coordinator = await _build_coordinator(hass)
+    coordinator._deferral = None  # ignore any episode opened by setup
+    t0 = datetime(2026, 8, 20, 22, 0, tzinfo=UTC)
+
+    for i, reason in enumerate(
+        ("min_off_lockout", "above_threshold", "below_threshold", "target_reached")
+    ):
+        coordinator._note_deferral(_reason_decision(reason), t0 + timedelta(minutes=i))
+    assert coordinator._deferral is None
+    rows = await hass.async_add_executor_job(coordinator._session_store.list_deferrals)
+    assert rows == []
+
+
+async def test_get_transitions_service_merges_deferrals(
+    hass: HomeAssistant, mock_client
+) -> None:
+    """The service interleaves edges and deferrals, tagged by kind, newest first."""
+    from datetime import UTC, datetime
+
+    hass.states.async_set("sensor.ev_soc", "20")
+    hass.states.async_set("number.ev_target", "80")
+    coordinator = await _build_coordinator(hass)
+
+    await hass.async_add_executor_job(
+        lambda: coordinator._session_store.insert_transition(
+            ts_utc=datetime(2026, 8, 20, 1, 0, tzinfo=UTC),
+            charging=True, reason="below_threshold",
+        )
+    )
+    await hass.async_add_executor_job(
+        lambda: coordinator._session_store.insert_deferral(
+            started_utc=datetime(2026, 8, 20, 3, 0, tzinfo=UTC),
+            ended_utc=datetime(2026, 8, 20, 5, 0, tzinfo=UTC),
+            reason="cheaper_later", mode="opportunistic",
+            decision_price=6.1, min_ahead=4.0, ended_reason="below_threshold",
+        )
+    )
+
+    response = await hass.services.async_call(
+        DOMAIN, "get_transitions", {"limit": 5}, blocking=True, return_response=True
+    )
+    rows = response["transitions"]
+    assert [r["kind"] for r in rows] == ["deferral", "edge"]  # newest (03:00) first
+    assert rows[0]["ended"] == "2026-08-20T05:00:00+00:00"
+    assert rows[0]["min_ahead"] == 4.0
+    assert rows[1]["charging"] is True
+
+
 async def test_distribution_rate_added_to_cost(
     hass: HomeAssistant, mock_client
 ) -> None:

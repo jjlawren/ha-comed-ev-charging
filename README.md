@@ -84,13 +84,20 @@ The `comed_ev.get_sessions` service returns the recorded sessions (optional `sta
 `end` bounds) with energy, settled cost, ¢/kWh, and savings — use it for reports or
 automations.
 
-The `comed_ev.get_transitions` service returns the recent `charge_now` on/off edges
-(optional `limit`, newest first), each with the decision context that produced it —
-`reason`, `decision_price`, `threshold`, `on_threshold`, `deadband`, and `volatility`.
-Every edge also fires a lean `comed_ev_charge_started` / `comed_ev_charge_stopped`
-event (Logbook, automations) and is logged; the durable history lives in the
-integration's own SQLite store, off the HA recorder. Use it to see *why* charging
-started or stopped.
+The `comed_ev.get_transitions` service returns one interleaved timeline (optional
+`limit`, newest first), each row tagged `kind`. A `kind: "edge"` row is a `charge_now`
+on/off flip, carrying the decision context that produced it — `reason`,
+`decision_price`, `threshold`, `on_threshold`, `deadband`, and `volatility`. A
+`kind: "deferral"` row is a *prevented charge*: a span where the reserve gate
+(`cheaper_later`) held a would-be charge off to reach a cheaper hour — it never flips
+`charge_now`, so it leaves no edge. Each carries `ts`/`ended` (the hold span),
+`decision_price` (what it would have cost), `min_ahead` (the cheaper price it waited
+for), and `ended_reason` (why the hold released). A deferral is recorded once, on
+close, never per poll; brief boundary flaps are coalesced and sub-15-minute holds are
+dropped, so the timeline stays quiet. Every edge also fires a lean
+`comed_ev_charge_started` / `comed_ev_charge_stopped` event (Logbook, automations) and
+is logged; the durable history lives in the integration's own SQLite store, off the HA
+recorder. Use it to see *why* charging started, stopped, or was held off.
 
 ## Dashboard cards
 
@@ -126,7 +133,9 @@ type: custom:comed-ev-history-card
 the reason and the operands that produced it: a price-vs-threshold gauge (price against
 the ON bar `T − δ` and the threshold `T`), plus `σ`, `δ`, and mode. A start held by the
 minimum-off lockout is annotated with how long it waited, and the footer counts cycles
-today. Calls the `comed_ev.get_transitions` service.
+today. Reserve-gate deferrals — prevented charges the optimizer held off for a cheaper
+hour — appear inline as their own muted spans (held duration, the price it waited for).
+Calls the `comed_ev.get_transitions` service.
 
 ```yaml
 type: custom:comed-ev-activity-card

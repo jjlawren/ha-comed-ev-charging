@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 import os
 import sqlite3
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS session (
@@ -54,6 +54,19 @@ CREATE TABLE IF NOT EXISTS transition (
 );
 
 CREATE INDEX IF NOT EXISTS idx_transition_ts ON transition(ts_utc);
+
+CREATE TABLE IF NOT EXISTS deferral (
+    id             INTEGER PRIMARY KEY,
+    started_utc    TEXT NOT NULL,
+    ended_utc      TEXT NOT NULL,
+    reason         TEXT NOT NULL,
+    mode           TEXT,
+    decision_price REAL,
+    min_ahead      REAL,
+    ended_reason   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_deferral_started ON deferral(started_utc);
 """
 
 
@@ -96,6 +109,28 @@ class Transition:
     context_json: str | None
 
 
+@dataclass(frozen=True)
+class Deferral:
+    """One reserve-gate deferral episode: a contiguous hold, not an edge.
+
+    Records a span the optimizer would have charged on price but the reserve gate
+    (`cheaper_later`) held off to reach a cheaper hour. One row per hold, written
+    when it settles — never per poll. `decision_price` is what charging would have
+    cost at the hold's start, `min_ahead` the cheaper price it waited for, and
+    `ended_reason` why the hold released (charging started, price rose, target
+    reached).
+    """
+
+    id: int
+    started_utc: datetime
+    ended_utc: datetime
+    reason: str
+    mode: str | None
+    decision_price: float | None
+    min_ahead: float | None
+    ended_reason: str | None
+
+
 def _iso(value: datetime) -> str:
     """Serialize a datetime to an ISO-8601 UTC string."""
     return value.astimezone(UTC).isoformat()
@@ -129,7 +164,8 @@ class SessionStore:
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             # Every schema object uses IF NOT EXISTS, so replaying the full
             # script additively upgrades an older DB (v1 -> v2 gains the
-            # `transition` table). Only stamp the version afterwards.
+            # `transition` table; v2 -> v3 gains the `deferral` table). Only
+            # stamp the version afterwards.
             conn.executescript(_SCHEMA)
             if version < SCHEMA_VERSION:
                 conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -280,6 +316,57 @@ class SessionStore:
             ).fetchall()
         return [_row_to_transition(row) for row in rows]
 
+    # --- deferrals -----------------------------------------------------------
+    def insert_deferral(
+        self,
+        *,
+        started_utc: datetime,
+        ended_utc: datetime,
+        reason: str,
+        mode: str | None = None,
+        decision_price: float | None = None,
+        min_ahead: float | None = None,
+        ended_reason: str | None = None,
+        retention: int | None = None,
+    ) -> int:
+        """Record a settled deferral episode; return its id.
+
+        With `retention` set, prune all but the newest `retention` rows after the
+        insert so the table stays bounded, mirroring `insert_transition`.
+        """
+        with self._connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO deferral ("
+                " started_utc, ended_utc, reason, mode, decision_price,"
+                " min_ahead, ended_reason"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    _iso(started_utc),
+                    _iso(ended_utc),
+                    reason,
+                    mode,
+                    decision_price,
+                    min_ahead,
+                    ended_reason,
+                ),
+            )
+            if retention is not None:
+                conn.execute(
+                    "DELETE FROM deferral WHERE id <= ("
+                    " SELECT id FROM deferral ORDER BY id DESC LIMIT 1 OFFSET ?)",
+                    (retention,),
+                )
+            assert cur.lastrowid is not None
+            return cur.lastrowid
+
+    def list_deferrals(self, limit: int = 20) -> list[Deferral]:
+        """Return the most recent deferral episodes, newest first."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM deferral ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [_row_to_deferral(row) for row in rows]
+
     # --- settled prices ------------------------------------------------------
     def upsert_settled_prices(self, prices: Mapping[datetime, float]) -> None:
         """Insert or replace settled hour-ending prices (¢/kWh)."""
@@ -323,6 +410,19 @@ def _row_to_transition(row: sqlite3.Row) -> Transition:
         volatility=row["volatility"],
         lockout_held=bool(row["lockout_held"]),
         context_json=row["context_json"],
+    )
+
+
+def _row_to_deferral(row: sqlite3.Row) -> Deferral:
+    return Deferral(
+        id=row["id"],
+        started_utc=_parse(row["started_utc"]),
+        ended_utc=_parse(row["ended_utc"]),
+        reason=row["reason"],
+        mode=row["mode"],
+        decision_price=row["decision_price"],
+        min_ahead=row["min_ahead"],
+        ended_reason=row["ended_reason"],
     )
 
 

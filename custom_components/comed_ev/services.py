@@ -62,8 +62,14 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         coordinator = _loaded_coordinator(hass)
         if coordinator is None:
             raise ServiceValidationError("No loaded ComEd EV Charging entry")
-        transitions = await coordinator.async_get_transitions(call.data["limit"])
-        return {"transitions": transitions}
+        limit = call.data["limit"]
+        # One interleaved, newest-first timeline of charge_now edges and reserve-
+        # gate deferral spans, tagged by `kind`. Merging the newest `limit` of
+        # each and re-capping yields the newest `limit` of the union.
+        edges = await coordinator.async_get_transitions(limit)
+        deferrals = await coordinator.async_get_deferrals(limit)
+        merged = sorted(edges + deferrals, key=lambda r: r["ts"], reverse=True)
+        return {"transitions": merged[:limit]}
 
     hass.services.async_register(
         DOMAIN,
