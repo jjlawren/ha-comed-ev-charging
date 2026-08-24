@@ -24,8 +24,14 @@ the curve, open [`docs/gamma-curve-explorer.html`](docs/gamma-curve-explorer.htm
 browser — an interactive plot of `T(SOC)`.
 
 - **No departure needed** for the common case — SOC pressure vs. the live price decides.
-- **Optional departure** adds an hourly feasibility check: if there is no longer enough
-  time to reach the target, `charge_now` forces on (`must_charge`) regardless of price.
+  Without a deadline, charging is best-effort and holds out for the expected cheapest
+  hours: an acceptable price still charges only when it is at or near the cheapest hour
+  left in the window (before the next 6 AM Central); a pricier hour is skipped
+  (`cheaper_later`) even if that means the target is not fully reached by morning.
+- **Optional departure** switches to deadline scheduling: the required hours are placed
+  in the cheapest forecast hours before departure (a pricier hour defers with
+  `cheaper_later`), the SOC threshold is not applied (completion is mandatory), and if
+  time runs short `charge_now` forces on (`must_charge`) to guarantee the deadline.
 - A **live price spike** naturally suppresses charging, because the 5-minute price
   jumps above the threshold unless SOC pressure (or a deadline) justifies paying it.
 
@@ -56,7 +62,10 @@ number entities.
 | `sensor.comed_ev_last_session_energy` | Energy (kWh) delivered in the last charge session. |
 | `sensor.comed_ev_last_session_effective_rate` | Effective rate (¢/kWh) of the last session: settled cost divided by delivered energy. |
 
-`reason` is one of `below_threshold`, `above_threshold`, `target_reached`, `must_charge`.
+`reason` is one of `below_threshold` (opportunistic, price acceptable and near the
+cheapest hour left), `above_threshold`, `target_reached`, `cheaper_later` (deferring for
+cheaper hours ahead), `cheapest_hours` (deadline, current hour is among the cheapest
+needed), and `must_charge` (deadline, out of slack).
 
 ## Session cost reporting
 
@@ -137,6 +146,9 @@ automation, or voice; changes apply immediately (no reload) and survive restarts
   suggestion (recomputed on change).
 - **Flat-rate baseline** (¢/kWh, 0 = disabled) and **Distribution charge** (¢/kWh) — used
   for session-cost reporting.
+- **Opportunistic price margin** (¢/kWh) — how far above the cheapest hour still ahead an
+  opportunistic charge will start. Larger charges more of a flat-cheap night; smaller
+  holds out closer to the trough. No effect in deadline mode.
 
 Only the **poll interval** remains under the integration's **Configure** button, since
 changing it needs a reload.

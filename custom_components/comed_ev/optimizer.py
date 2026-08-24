@@ -17,6 +17,8 @@ REASON_TARGET_REACHED = "target_reached"
 REASON_MUST_CHARGE = "must_charge"
 REASON_BELOW_THRESHOLD = "below_threshold"
 REASON_ABOVE_THRESHOLD = "above_threshold"
+REASON_CHEAPER_LATER = "cheaper_later"
+REASON_CHEAPEST_HOURS = "cheapest_hours"
 
 # Forecast provenance, best-to-worst.
 SOURCE_DAY_AHEAD = "day_ahead"
@@ -219,6 +221,46 @@ class ChargeDecision:
     plan: ChargePlan | None = None
 
 
+def _current_hour_end(now: datetime) -> datetime:
+    """Return the hour-ending timestamp that closes the hour containing `now`."""
+    return now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+
+
+def cheaper_hours_ahead(
+    forecast: dict[datetime, ForecastHour],
+    now: datetime,
+    decision_price: float,
+) -> int:
+    """Count future forecast hours priced strictly below `decision_price`.
+
+    Only hours ending after the current hour count: the current hour is where
+    charging would happen right now, so it is not a deferrable alternative to
+    itself. This is the current hour's price rank in the window, so the current
+    hour is among the cheapest `n` when the count is below `n`. Ties (equal
+    price) are not counted, so they favour charging.
+    """
+    end = _current_hour_end(now)
+    return sum(
+        1
+        for h in forecast.values()
+        if h.hour_ending > end and h.price < decision_price
+    )
+
+
+def cheapest_hour_ahead_price(
+    forecast: dict[datetime, ForecastHour], now: datetime
+) -> float | None:
+    """Lowest price among forecast hours ending after the current hour.
+
+    None when no future hour is forecast, i.e. nothing cheaper can be waited
+    for. Used by opportunistic charging to judge how close the current price is
+    to the trough of the remaining window.
+    """
+    end = _current_hour_end(now)
+    ahead = [h.price for h in forecast.values() if h.hour_ending > end]
+    return min(ahead) if ahead else None
+
+
 def should_charge_now(
     now: datetime,
     current_soc: float,
@@ -230,21 +272,40 @@ def should_charge_now(
     min_soc: float = 0.0,
     gamma: float = 2.5,
     plan: ChargePlan | None = None,
+    forecast: dict[datetime, ForecastHour] | None = None,
+    hours_needed: int | None = None,
+    price_margin: float = 1.0,
 ) -> ChargeDecision:
     """Decide whether to charge right now against the running hourly average.
 
     The price actually paid is the settled hourly average, which is not known
     until the hour completes; the running current-hour average is the best live
     proxy. A single 5-minute point is too noisy to decide on, so callers pass
-    the hourly average as `decision_price`.
+    the hourly average as `decision_price`. `forecast` covers the window up to
+    the overnight end (opportunistic) or the departure (deadline).
 
-    Decision order:
-      1. target reached                    -> off  (target_reached)
-      2. deadline configured, slack <= 0   -> on   (must_charge)
-      3. decision_price < T(SOC)           -> on   (below_threshold)
-      4. else                              -> off  (above_threshold)
+    Two modes, distinguished by whether a deadline `plan` is given:
+
+    Deadline mode completes the charge by departure but schedules it into the
+    cheapest hours. It ignores the SOC threshold (skipping is not an option
+    when a deadline must be met, so willingness-to-pay does not apply); it
+    charges when the current hour is among the cheapest `hours_needed` hours
+    left, defers otherwise, and `must_charge` (slack <= 0) guarantees the
+    deadline if the forecast was wrong.
+      1. target reached                     -> off  (target_reached)
+      2. slack <= 0                         -> on   (must_charge)
+      3. >= hours_needed cheaper hours left -> off  (cheaper_later)
+      4. else                               -> on   (cheapest_hours)
+
+    Opportunistic mode (no deadline) never forces completion. It caps
+    willingness-to-pay at the SOC threshold and, within that, charges only when
+    the price is at or near the trough of the remaining window (within
+    `price_margin` of the cheapest hour still ahead).
+      1. target reached                     -> off  (target_reached)
+      2. decision_price >= T(SOC)           -> off  (above_threshold)
+      3. a cheaper hour is > margin ahead   -> off  (cheaper_later)
+      4. else                               -> on   (below_threshold)
     """
-    del now  # part of the documented signature; decision uses `plan` for time context
     urgency = soc_urgency(current_soc, target_soc, min_soc)
     threshold = charge_threshold(
         current_soc,
@@ -254,21 +315,35 @@ def should_charge_now(
         min_soc=min_soc,
         gamma=gamma,
     )
+    forecast = forecast or {}
+
+    def decide(charge: bool, reason: str) -> ChargeDecision:
+        return ChargeDecision(
+            charge, reason, decision_price, threshold, urgency, gamma, plan
+        )
+
     if current_soc >= target_soc:
-        return ChargeDecision(
-            False, REASON_TARGET_REACHED, decision_price, threshold, urgency, gamma, plan
-        )
-    if plan is not None and plan.slack_hours <= 0:
-        return ChargeDecision(
-            True, REASON_MUST_CHARGE, decision_price, threshold, urgency, gamma, plan
-        )
-    if decision_price < threshold:
-        return ChargeDecision(
-            True, REASON_BELOW_THRESHOLD, decision_price, threshold, urgency, gamma, plan
-        )
-    return ChargeDecision(
-        False, REASON_ABOVE_THRESHOLD, decision_price, threshold, urgency, gamma, plan
-    )
+        return decide(False, REASON_TARGET_REACHED)
+
+    if plan is not None:
+        # Deadline mode: complete by departure, scheduled into the cheapest
+        # hours. Threshold is not consulted; must_charge is the safety net.
+        if plan.slack_hours <= 0:
+            return decide(True, REASON_MUST_CHARGE)
+        if (
+            hours_needed
+            and cheaper_hours_ahead(forecast, now, decision_price) >= hours_needed
+        ):
+            return decide(False, REASON_CHEAPER_LATER)
+        return decide(True, REASON_CHEAPEST_HOURS)
+
+    # Opportunistic mode: no obligation to complete.
+    if decision_price >= threshold:
+        return decide(False, REASON_ABOVE_THRESHOLD)
+    min_ahead = cheapest_hour_ahead_price(forecast, now)
+    if min_ahead is not None and decision_price > min_ahead + price_margin:
+        return decide(False, REASON_CHEAPER_LATER)
+    return decide(True, REASON_BELOW_THRESHOLD)
 
 
 def build_forecast(

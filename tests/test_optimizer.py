@@ -10,6 +10,8 @@ import pytest
 from custom_components.comed_ev.optimizer import (
     REASON_ABOVE_THRESHOLD,
     REASON_BELOW_THRESHOLD,
+    REASON_CHEAPER_LATER,
+    REASON_CHEAPEST_HOURS,
     REASON_MUST_CHARGE,
     REASON_TARGET_REACHED,
     SOURCE_DAY_AHEAD,
@@ -18,7 +20,9 @@ from custom_components.comed_ev.optimizer import (
     ForecastHour,
     build_forecast,
     charge_threshold,
+    cheaper_hours_ahead,
     cheapest_forecast_hour,
+    cheapest_hour_ahead_price,
     energy_needed_kwh,
     estimate_charge_cost,
     plan_charge,
@@ -112,7 +116,7 @@ def test_must_charge_overrides_price():
     assert d.reason == REASON_MUST_CHARGE
 
 
-def test_slack_positive_lets_threshold_govern():
+def test_slack_positive_defers_for_cheaper_hours():
     plan = plan_charge(
         NOW,
         NOW + timedelta(hours=12),
@@ -124,9 +128,147 @@ def test_slack_positive_lets_threshold_govern():
         forecast={},
     )
     assert plan.slack_hours > 0
-    d = _decide(79, 40.0, plan=plan)  # ample slack, spike price -> stay off
+    # Ample slack and cheaper hours ahead -> defer (threshold is not consulted
+    # in deadline mode; scheduling into the cheapest hours governs).
+    forecast = _hourly_forecast(40.0, 3.0, 3.0)
+    d = _decide(79, 40.0, plan=plan, forecast=forecast, hours_needed=1)
+    assert d.charge_now is False
+    assert d.reason == REASON_CHEAPER_LATER
+
+
+# --- forecast-window helpers -------------------------------------------------
+
+
+def _hourly_forecast(*prices: float) -> dict:
+    """Forecast at top-of-hour ends; prices[0] is the current hour (21:00)."""
+    base = NOW.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    return {
+        base + timedelta(hours=i): ForecastHour(
+            base + timedelta(hours=i), p, SOURCE_DAY_AHEAD
+        )
+        for i, p in enumerate(prices)
+    }
+
+
+def test_cheaper_hours_ahead_excludes_current_hour():
+    # Current hour is 4¢; two later hours are cheaper. The current hour is not
+    # counted as an alternative to itself.
+    forecast = _hourly_forecast(4.0, 3.0, 3.0, 8.0)
+    assert cheaper_hours_ahead(forecast, NOW, 4.0) == 2
+
+
+def test_cheaper_hours_ahead_flat_forecast_none():
+    # A flat forecast has nothing strictly cheaper -> no deferral.
+    forecast = _hourly_forecast(4.0, 4.0, 4.0)
+    assert cheaper_hours_ahead(forecast, NOW, 4.0) == 0
+
+
+def test_cheapest_hour_ahead_price_excludes_current_hour():
+    # Current hour (2¢) is the cheapest but is not "ahead"; the trough ahead is 3¢.
+    forecast = _hourly_forecast(2.0, 5.0, 3.0, 8.0)
+    assert cheapest_hour_ahead_price(forecast, NOW) == pytest.approx(3.0)
+
+
+def test_cheapest_hour_ahead_price_none_with_no_future():
+    forecast = _hourly_forecast(4.0)  # only the current hour
+    assert cheapest_hour_ahead_price(forecast, NOW) is None
+
+
+# --- opportunistic charging (relative band, no completion) -------------------
+
+
+def test_opportunistic_defers_when_cheaper_hour_beyond_margin():
+    # Below threshold, but a much cheaper hour is ahead (2¢ vs 4¢, margin 1¢).
+    forecast = _hourly_forecast(4.0, 2.0, 2.0)
+    d = _decide(40, 4.0, forecast=forecast)
+    assert d.charge_now is False
+    assert d.reason == REASON_CHEAPER_LATER
+
+
+def test_opportunistic_charges_within_margin_of_trough():
+    # Cheapest ahead is 3.5¢; the current 4¢ is within the 1¢ margin -> charge.
+    forecast = _hourly_forecast(4.0, 3.5, 6.0)
+    d = _decide(40, 4.0, forecast=forecast)
+    assert d.charge_now is True
+    assert d.reason == REASON_BELOW_THRESHOLD
+
+
+def test_opportunistic_charges_when_no_cheaper_hours_ahead():
+    forecast = _hourly_forecast(4.0, 5.0, 6.0)
+    d = _decide(40, 4.0, forecast=forecast)
+    assert d.charge_now is True
+    assert d.reason == REASON_BELOW_THRESHOLD
+
+
+def test_opportunistic_does_not_chase_completion_in_short_window():
+    # Only cheap hours ahead and little time left, but completion is optional:
+    # a pricier current hour still defers rather than scramble to finish.
+    forecast = _hourly_forecast(4.0, 2.0)
+    d = _decide(40, 4.0, forecast=forecast, hours_needed=5)
+    assert d.charge_now is False
+    assert d.reason == REASON_CHEAPER_LATER
+
+
+def test_opportunistic_never_overrides_above_threshold():
+    # A spike is rejected as above-threshold regardless of the forecast.
+    forecast = _hourly_forecast(40.0, 3.0, 3.0)
+    d = _decide(79, 40.0, forecast=forecast)
     assert d.charge_now is False
     assert d.reason == REASON_ABOVE_THRESHOLD
+
+
+# --- deadline scheduling (cheapest hours, deadline guaranteed) ---------------
+
+
+def _deadline_plan(hours: int, soc: float = 40.0):
+    return plan_charge(
+        NOW,
+        NOW + timedelta(hours=hours),
+        current_soc=soc,
+        target_soc=80,
+        capacity_kwh=75,
+        charge_rate_kw=11,
+        efficiency=0.9,
+        forecast={},
+    )
+
+
+def test_deadline_defers_when_enough_cheaper_hours_ahead():
+    plan = _deadline_plan(12)
+    assert plan.slack_hours > 0
+    forecast = _hourly_forecast(4.0, 3.0, 3.0)  # two cheaper hours ahead
+    d = _decide(40, 4.0, plan=plan, forecast=forecast, hours_needed=1)
+    assert d.charge_now is False
+    assert d.reason == REASON_CHEAPER_LATER
+
+
+def test_deadline_charges_when_current_among_cheapest_needed():
+    plan = _deadline_plan(12)
+    forecast = _hourly_forecast(4.0, 3.0, 3.0)  # two cheaper hours ahead
+    # Three hours needed, only two cheaper ahead -> current hour is in the
+    # cheapest three, so charge it.
+    d = _decide(40, 4.0, plan=plan, forecast=forecast, hours_needed=3)
+    assert d.charge_now is True
+    assert d.reason == REASON_CHEAPEST_HOURS
+
+
+def test_deadline_ignores_threshold_on_expensive_night():
+    plan = _deadline_plan(12)
+    # Every hour is a spike (above threshold), but the current hour is the
+    # cheapest ahead -> charge it; threshold does not block a required charge.
+    forecast = _hourly_forecast(40.0, 45.0, 50.0)
+    d = _decide(40, 40.0, plan=plan, forecast=forecast, hours_needed=1)
+    assert d.charge_now is True
+    assert d.reason == REASON_CHEAPEST_HOURS
+
+
+def test_deadline_must_charge_when_slack_gone():
+    plan = _deadline_plan(2, soc=20)  # 2h available, needs far more
+    assert plan.slack_hours <= 0
+    forecast = _hourly_forecast(40.0, 3.0, 3.0)  # cheaper ahead, but no time
+    d = _decide(20, 55.0, plan=plan, forecast=forecast, hours_needed=1)
+    assert d.charge_now is True
+    assert d.reason == REASON_MUST_CHARGE
 
 
 # --- plan_charge -------------------------------------------------------------
