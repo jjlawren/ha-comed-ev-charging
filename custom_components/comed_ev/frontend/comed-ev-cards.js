@@ -498,28 +498,84 @@ function txPills(t) {
   return out.join("");
 }
 
+function gaugeReason(t) {
+  return t.reason === "below_threshold" || t.reason === "above_threshold";
+}
+
+// Shared price axis for every gauge in a card, so a price sits at the same x on
+// every row and landmarks (ON, T) line up. Scaled to the priciest drawn value
+// across the gauge-bearing rows; min_ahead is not drawn, so it is left out of
+// the scale. The floor drops below zero only when a price actually goes
+// negative (a paid-to-charge hour) — otherwise the axis stays anchored at 0.
+function gaugeScale(rows) {
+  const vals = [];
+  for (const t of rows) {
+    if (!gaugeReason(t)) continue;
+    for (const v of [t.decision_price, t.on_threshold, t.threshold]) {
+      if (v != null) vals.push(v);
+    }
+  }
+  return { lo: Math.min(0, ...vals) * 1.15, hi: Math.max(6, ...vals) * 1.15 };
+}
+
 // A price-vs-threshold gauge, only where the threshold governs (opportunistic
 // on/off). Deadline edges omit it — the threshold is not consulted there.
-function txGauge(t) {
-  if (t.reason !== "below_threshold" && t.reason !== "above_threshold") return "";
-  const vals = [t.decision_price, t.threshold, t.on_threshold, t.min_ahead].filter(
-    (v) => v != null,
-  );
-  const hi = Math.max(6, ...vals) * 1.15;
-  const pct = (v) => Math.max(0, Math.min(100, (v / hi) * 100));
+// `scale` is the card-wide {lo, hi} axis from gaugeScale().
+function txGauge(t, scale) {
+  if (!gaugeReason(t)) return "";
+  const span = scale.hi - scale.lo || 1;
+  const pct = (v) => Math.max(0, Math.min(100, ((v - scale.lo) / span) * 100));
+  const tick = (v, lbl, cls) =>
+    v == null
+      ? ""
+      : `<span class="g-tick ${cls || ""}" style="left:${pct(v)}%">${lbl}</span>`;
+  // A zero reference only where the axis actually reaches below zero.
+  const zeroLine = scale.lo < 0 ? `<div class="g-zero" style="left:${pct(0)}%"></div>` : "";
+  const zeroTick = scale.lo < 0 ? tick(0, "0") : "";
+  // The axis min/max, flush to each end. Drop an end label when a value tick
+  // sits within EDGE% of that edge — otherwise they overlap (e.g. a negative
+  // price pinned to the left, where the end label only repeats it anyway).
+  const EDGE = 15;
+  const marks = [t.decision_price, t.on_threshold, t.threshold, scale.lo < 0 ? 0 : null]
+    .filter((v) => v != null)
+    .map(pct);
+  const loEnd =
+    Math.min(...marks) > EDGE ? `<span class="g-tick g-end lo">${cents(scale.lo)}</span>` : "";
+  const hiEnd =
+    Math.max(...marks) < 100 - EDGE ? `<span class="g-tick g-end hi">${cents(scale.hi)}</span>` : "";
   const price = pct(t.decision_price);
+  // A sub-zero price is a paid-to-charge hour — flag the dot and its value green.
+  const neg = t.decision_price != null && t.decision_price < 0;
+  const dotCls = neg ? "g-price neg" : "g-price";
+  const valCls = neg ? "val neg" : "val";
   if (t.reason === "below_threshold") {
     const bar = pct(t.on_threshold);
     const top = pct(t.threshold);
-    return `<div class="gauge">
+    return `<div class="gauge labeled">
         <div class="g-fill" style="left:0;width:${bar}%"></div>
         <div class="g-band" style="left:${bar}%;width:${Math.max(0, top - bar)}%"></div>
-        <span class="g-price" style="left:${price}%"></span>
+        ${zeroLine}
+        <span class="${dotCls}" style="left:${price}%"></span>
+      </div>
+      <div class="g-ticks">
+        ${loEnd}${hiEnd}
+        ${tick(t.decision_price, cents(t.decision_price), valCls)}
+        ${zeroTick}
+        ${tick(t.on_threshold, "ON")}
+        ${tick(t.threshold, "T")}
       </div>`;
   }
-  return `<div class="gauge">
+  return `<div class="gauge labeled">
+      ${t.threshold != null ? `<div class="g-thr" style="left:${pct(t.threshold)}%"></div>` : ""}
       <div class="g-fill" style="left:${price}%;right:0"></div>
-      <span class="g-price" style="left:${price}%"></span>
+      ${zeroLine}
+      <span class="${dotCls}" style="left:${price}%"></span>
+    </div>
+    <div class="g-ticks">
+      ${loEnd}${hiEnd}
+      ${zeroTick}
+      ${tick(t.threshold, "T")}
+      ${tick(t.decision_price, cents(t.decision_price), valCls)}
     </div>`;
 }
 
@@ -623,6 +679,7 @@ class ComEdActivityCard extends HTMLElement {
       body = `<div class="empty">No charge transitions yet.</div>`;
     } else {
       const parts = [];
+      const gScale = gaugeScale(rows);
       let lastDay = null;
       rows.forEach((t, i) => {
         const dl = dayLabel(t.ts);
@@ -660,7 +717,7 @@ class ComEdActivityCard extends HTMLElement {
                 <span class="sp"></span>${mode}
               </div>
               <div class="why">${txDescribe(t)}</div>
-              ${txGauge(t)}
+              ${txGauge(t, gScale)}
               <div class="ops">${txPills(t)}</div>
             </div>
           </div>`);
@@ -767,6 +824,7 @@ const ACTIVITY_CSS = `
     position: relative; height: 15px; border-radius: 5px;
     background: var(--secondary-background-color); margin: 2px 0 6px; overflow: hidden;
   }
+  .gauge.labeled { margin: 2px 0 0; }
   .g-fill { position: absolute; top: 0; bottom: 0; opacity: .16; }
   .tx.start .g-fill { background: ${CHARGE}; }
   .tx.stop .g-fill { background: ${WARM}; }
@@ -783,6 +841,39 @@ const ACTIVITY_CSS = `
   }
   .tx.start .g-price { background: ${CHARGE}; }
   .tx.stop .g-price { background: ${WARM}; }
+  .g-thr {
+    position: absolute; top: 0; bottom: 0; width: 1px;
+    background: color-mix(in srgb, var(--secondary-text-color) 55%, transparent);
+  }
+  .g-zero {
+    position: absolute; top: 0; bottom: 0; width: 1px;
+    background: color-mix(in srgb, var(--secondary-text-color) 40%, transparent);
+  }
+  .g-ticks {
+    position: relative; height: 13px; margin: 1px 0 7px;
+    font-size: 9.5px; color: var(--secondary-text-color);
+  }
+  .g-tick {
+    position: absolute; top: 3px; transform: translateX(-50%); white-space: nowrap;
+    letter-spacing: .04em; text-transform: uppercase; font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .g-tick::before {
+    content: ""; position: absolute; left: 50%; top: -3px; width: 1px; height: 3px;
+    background: var(--divider-color); transform: translateX(-50%);
+  }
+  .g-tick.val { color: var(--primary-text-color); text-transform: none; letter-spacing: 0; }
+  .tx.start .g-tick.val::before { background: ${CHARGE}; }
+  .tx.stop .g-tick.val::before { background: ${WARM}; }
+  .tx .g-price.neg { background: ${GOOD}; }
+  .tx .g-tick.val.neg { color: ${GOOD}; }
+  .tx .g-tick.val.neg::before { background: ${GOOD}; }
+  .g-end {
+    text-transform: none; letter-spacing: 0; font-weight: 500; opacity: .7;
+  }
+  .g-end::before { display: none; }
+  .g-end.lo { left: 0; transform: none; }
+  .g-end.hi { left: auto; right: 0; transform: none; }
   .ops { display: flex; flex-wrap: wrap; gap: 4px 6px; }
   .op {
     font-size: 10.5px; font-weight: 500; color: var(--secondary-text-color);
