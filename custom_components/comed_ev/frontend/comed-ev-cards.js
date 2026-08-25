@@ -515,6 +515,8 @@ function gaugeScale(rows) {
     for (const v of [t.decision_price, t.on_threshold, t.threshold]) {
       if (v != null) vals.push(v);
     }
+    // The settled dot is drawn only on charge starts; keep it inside the axis.
+    if (t.charging && t.settled_price != null) vals.push(t.settled_price);
   }
   return { lo: Math.min(0, ...vals) * 1.15, hi: Math.max(1, ...vals) * 1.15 };
 }
@@ -531,6 +533,13 @@ function txGauge(t, scale) {
   const neg = t.decision_price != null && t.decision_price < 0;
   const dotCls = neg ? "g-price neg" : "g-price";
   const zeroLine = scale.lo < 0 ? `<div class="g-zero" style="left:${pct(0)}%"></div>` : "";
+
+  // On a charge start, once the hour settles, show where the price ended up: a
+  // second dot at the settled hour-average, the triggering `decision_price` dot
+  // greyed, and an arrow along the bar from the read to the settled value.
+  const settled = t.charging && t.settled_price != null ? t.settled_price : null;
+  const sPct = settled != null ? pct(settled) : null;
+  const sNeg = settled != null && settled < 0;
 
   let visuals;
   if (t.reason === "below_threshold") {
@@ -552,7 +561,13 @@ function txGauge(t, scale) {
   const add = (v, text, cls, prio, opts) => {
     if (v != null) cand.push({ pos: pct(v), text, cls, prio, ...opts });
   };
-  add(t.decision_price, cents(t.decision_price), neg ? "g-tick val neg" : "g-tick val", 0);
+  if (settled != null) {
+    // The settled value leads; the greyed read follows, dropped if they collide.
+    add(settled, cents(settled), sNeg ? "g-tick val settled neg" : "g-tick val settled", 0);
+    add(t.decision_price, cents(t.decision_price), "g-tick val muted", 0.5);
+  } else {
+    add(t.decision_price, cents(t.decision_price), neg ? "g-tick val neg" : "g-tick val", 0);
+  }
   add(t.threshold, "T", "g-tick", 1);
   if (t.reason === "below_threshold") add(t.on_threshold, "ON", "g-tick", 2);
   if (scale.lo < 0) add(0, "0", "g-tick", 3);
@@ -573,7 +588,21 @@ function txGauge(t, scale) {
     )
     .join("");
 
-  return `<div class="gauge labeled">${visuals}${zeroLine}<span class="${dotCls}" style="left:${price}%"></span></div>
+  // Dots (and the arrow between them, when settled). The read dot greys out once
+  // settled; the settled dot carries the price sign for its colour.
+  let overlay = `<span class="${dotCls}${settled != null ? " muted" : ""}" style="left:${price}%"></span>`;
+  if (settled != null) {
+    const dir = sPct >= price ? "right" : "left";
+    const lo = Math.min(price, sPct);
+    const wide = Math.abs(sPct - price);
+    overlay =
+      `<div class="g-track" style="left:${lo}%;width:${wide}%"></div>` +
+      `<div class="g-arrow ${dir}" style="left:${sPct}%"></div>` +
+      overlay +
+      `<span class="${sNeg ? "g-price neg" : "g-price"} settled" style="left:${sPct}%"></span>`;
+  }
+
+  return `<div class="gauge labeled">${visuals}${zeroLine}${overlay}</div>
     <div class="g-ticks">${ticks}</div>`;
 }
 
@@ -866,6 +895,20 @@ const ACTIVITY_CSS = `
   .tx .g-price.neg { background: ${GOOD}; }
   .tx .g-tick.val.neg { color: ${GOOD}; }
   .tx .g-tick.val.neg::before { background: ${GOOD}; }
+  /* Settled overlay: the greyed triggering read, and the arrow to the settled dot. */
+  .tx .g-price.muted { background: var(--secondary-text-color); opacity: .55; z-index: 2; }
+  .g-track {
+    position: absolute; top: 50%; height: 1.5px; transform: translateY(-50%);
+    background: var(--secondary-text-color); opacity: .5; z-index: 1;
+  }
+  .g-arrow {
+    position: absolute; top: 50%; width: 0; height: 0; z-index: 3;
+    border-top: 3px solid transparent; border-bottom: 3px solid transparent;
+  }
+  .g-arrow.right { transform: translate(calc(-100% - 5px), -50%); border-left: 5px solid var(--secondary-text-color); }
+  .g-arrow.left { transform: translate(5px, -50%); border-right: 5px solid var(--secondary-text-color); }
+  .g-tick.val.muted { color: var(--secondary-text-color); opacity: .7; }
+  .tx .g-tick.val.muted::before { background: var(--divider-color); }
   .g-end {
     text-transform: none; letter-spacing: 0; font-weight: 500; opacity: .7;
   }
