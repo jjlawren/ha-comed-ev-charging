@@ -505,8 +505,9 @@ function gaugeReason(t) {
 // Shared price axis for every gauge in a card, so a price sits at the same x on
 // every row and landmarks (ON, T) line up. Scaled to the priciest drawn value
 // across the gauge-bearing rows; min_ahead is not drawn, so it is left out of
-// the scale. The floor drops below zero only when a price actually goes
-// negative (a paid-to-charge hour) — otherwise the axis stays anchored at 0.
+// the scale. The axis adapts to the data (no fixed ceiling), so a card of
+// near-threshold prices spreads across the width instead of bunching left; the
+// floor drops below zero only when a price actually goes negative.
 function gaugeScale(rows) {
   const vals = [];
   for (const t of rows) {
@@ -515,7 +516,7 @@ function gaugeScale(rows) {
       if (v != null) vals.push(v);
     }
   }
-  return { lo: Math.min(0, ...vals) * 1.15, hi: Math.max(6, ...vals) * 1.15 };
+  return { lo: Math.min(0, ...vals) * 1.15, hi: Math.max(1, ...vals) * 1.15 };
 }
 
 // A price-vs-threshold gauge, only where the threshold governs (opportunistic
@@ -525,58 +526,55 @@ function txGauge(t, scale) {
   if (!gaugeReason(t)) return "";
   const span = scale.hi - scale.lo || 1;
   const pct = (v) => Math.max(0, Math.min(100, ((v - scale.lo) / span) * 100));
-  const tick = (v, lbl, cls) =>
-    v == null
-      ? ""
-      : `<span class="g-tick ${cls || ""}" style="left:${pct(v)}%">${lbl}</span>`;
-  // A zero reference only where the axis actually reaches below zero.
-  const zeroLine = scale.lo < 0 ? `<div class="g-zero" style="left:${pct(0)}%"></div>` : "";
-  const zeroTick = scale.lo < 0 ? tick(0, "0") : "";
-  // The axis min/max, flush to each end. Drop an end label when a value tick
-  // sits within EDGE% of that edge — otherwise they overlap (e.g. a negative
-  // price pinned to the left, where the end label only repeats it anyway).
-  const EDGE = 15;
-  const marks = [t.decision_price, t.on_threshold, t.threshold, scale.lo < 0 ? 0 : null]
-    .filter((v) => v != null)
-    .map(pct);
-  const loEnd =
-    Math.min(...marks) > EDGE ? `<span class="g-tick g-end lo">${cents(scale.lo)}</span>` : "";
-  const hiEnd =
-    Math.max(...marks) < 100 - EDGE ? `<span class="g-tick g-end hi">${cents(scale.hi)}</span>` : "";
   const price = pct(t.decision_price);
   // A sub-zero price is a paid-to-charge hour — flag the dot and its value green.
   const neg = t.decision_price != null && t.decision_price < 0;
   const dotCls = neg ? "g-price neg" : "g-price";
-  const valCls = neg ? "val neg" : "val";
+  const zeroLine = scale.lo < 0 ? `<div class="g-zero" style="left:${pct(0)}%"></div>` : "";
+
+  let visuals;
   if (t.reason === "below_threshold") {
     const bar = pct(t.on_threshold);
     const top = pct(t.threshold);
-    return `<div class="gauge labeled">
-        <div class="g-fill" style="left:0;width:${bar}%"></div>
-        <div class="g-band" style="left:${bar}%;width:${Math.max(0, top - bar)}%"></div>
-        ${zeroLine}
-        <span class="${dotCls}" style="left:${price}%"></span>
-      </div>
-      <div class="g-ticks">
-        ${loEnd}${hiEnd}
-        ${tick(t.decision_price, cents(t.decision_price), valCls)}
-        ${zeroTick}
-        ${tick(t.on_threshold, "ON")}
-        ${tick(t.threshold, "T")}
-      </div>`;
+    visuals =
+      `<div class="g-fill" style="left:0;width:${bar}%"></div>` +
+      `<div class="g-band" style="left:${bar}%;width:${Math.max(0, top - bar)}%"></div>`;
+  } else {
+    const thr = t.threshold != null ? `<div class="g-thr" style="left:${pct(t.threshold)}%"></div>` : "";
+    visuals = `${thr}<div class="g-fill" style="left:${price}%;right:0"></div>`;
   }
-  return `<div class="gauge labeled">
-      ${t.threshold != null ? `<div class="g-thr" style="left:${pct(t.threshold)}%"></div>` : ""}
-      <div class="g-fill" style="left:${price}%;right:0"></div>
-      ${zeroLine}
-      <span class="${dotCls}" style="left:${price}%"></span>
-    </div>
-    <div class="g-ticks">
-      ${loEnd}${hiEnd}
-      ${zeroTick}
-      ${tick(t.threshold, "T")}
-      ${tick(t.decision_price, cents(t.decision_price), valCls)}
-    </div>`;
+
+  // Label candidates, most important first. A start fires when price ≈ ON and a
+  // stop when price ≈ T, so labels routinely coincide; keep the higher-priority
+  // one and drop any lower-priority label within MIN_GAP% of it. Dropped values
+  // still show in the pills below and their landmark stays drawn on the bar.
+  const cand = [];
+  const add = (v, text, cls, prio, opts) => {
+    if (v != null) cand.push({ pos: pct(v), text, cls, prio, ...opts });
+  };
+  add(t.decision_price, cents(t.decision_price), neg ? "g-tick val neg" : "g-tick val", 0);
+  add(t.threshold, "T", "g-tick", 1);
+  if (t.reason === "below_threshold") add(t.on_threshold, "ON", "g-tick", 2);
+  if (scale.lo < 0) add(0, "0", "g-tick", 3);
+  // Axis min/max, flush to the ends (positioned by CSS, not `left`).
+  cand.push({ pos: 0, text: cents(scale.lo), cls: "g-tick g-end lo", prio: 4, flush: true });
+  cand.push({ pos: 100, text: cents(scale.hi), cls: "g-tick g-end hi", prio: 4, flush: true });
+
+  const MIN_GAP = 9;
+  const kept = [];
+  for (const c of [...cand].sort((a, b) => a.prio - b.prio)) {
+    if (kept.every((k) => Math.abs(k.pos - c.pos) >= MIN_GAP)) kept.push(c);
+  }
+  const ticks = kept
+    .map((c) =>
+      c.flush
+        ? `<span class="${c.cls}">${c.text}</span>`
+        : `<span class="${c.cls}" style="left:${c.pos}%">${c.text}</span>`,
+    )
+    .join("");
+
+  return `<div class="gauge labeled">${visuals}${zeroLine}<span class="${dotCls}" style="left:${price}%"></span></div>
+    <div class="g-ticks">${ticks}</div>`;
 }
 
 // A deferral is a reserve-gate hold span (kind: "deferral"), not an edge — the
