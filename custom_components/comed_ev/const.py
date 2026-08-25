@@ -116,7 +116,9 @@ STORAGE_KEY = "comed_ev.history"
 # Dedicated SQLite file (under HA's .storage) for durable session-cost records.
 SESSION_DB_FILENAME = "comed_ev_sessions.db"
 # How often to backfill settled prices and recompute session costs (seconds).
-SETTLE_INTERVAL_SECONDS = 86400
+# Hourly: ComEd can settle a rate a few hours late, and the pass only fetches
+# days with still-unsettled sessions, so it is cheap once everything settles.
+SETTLE_INTERVAL_SECONDS = 3600
 
 # Fetch the heavier hourly-estimate feeds at most this often (seconds).
 HOURLY_FEED_INTERVAL = 3600
