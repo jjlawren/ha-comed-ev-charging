@@ -867,6 +867,13 @@ async def test_get_transitions_service(hass: HomeAssistant, mock_client) -> None
         )
     )
 
+    # Settle the hour the start fell in (01:00 → hour ending 02:00 UTC).
+    await hass.async_add_executor_job(
+        lambda: coordinator._session_store.upsert_settled_prices(
+            {datetime(2026, 8, 20, 2, 0, tzinfo=UTC): 4.7}
+        )
+    )
+
     response = await hass.services.async_call(
         DOMAIN, "get_transitions", {"limit": 5}, blocking=True, return_response=True
     )
@@ -876,9 +883,13 @@ async def test_get_transitions_service(hass: HomeAssistant, mock_client) -> None
     assert rows[0]["reason"] == "cheaper_later"
     assert rows[0]["slack_hours"] == 5
     assert rows[0]["hours_needed"] == 3
-    # Oldest: the lockout-held start, with min_ahead flattened out.
+    # Oldest: the lockout-held start, with min_ahead flattened out and the
+    # settled hour-average joined on.
     assert rows[1]["lockout_held"] is True
     assert rows[1]["min_ahead"] == 3.5
+    assert rows[1]["settled_price"] == 4.7
+    # The stop's hour (03:00) has not settled — no price to surface.
+    assert rows[0]["settled_price"] is None
 
 
 def _reason_decision(reason: str, *, price: float = 6.2, min_ahead: float | None = 4.1):

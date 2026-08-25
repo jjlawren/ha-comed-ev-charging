@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from functools import partial
 import json
 import logging
@@ -116,6 +116,17 @@ _LOGGER = logging.getLogger(__name__)
 # delays (the Activity card's "held N min" note), so recording it too would
 # double-count.
 _DEFERRAL_REASONS = frozenset({REASON_CHEAPER_LATER})
+
+
+def _containing_hour_ending(ts: datetime) -> datetime:
+    """Top-of-hour that *ends* the hour containing `ts` (ComEd's convention).
+
+    Matches the `hour_ending` keys the settled-price table is stored under, so a
+    transition can be joined to the settled hour-average it fell in.
+    """
+    top = ts.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
+    return top + timedelta(hours=1)
+
 
 type ComEdConfigEntry = ConfigEntry[ComEdCoordinator]
 
@@ -1044,6 +1055,14 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
         transitions = await self.hass.async_add_executor_job(
             partial(self._session_store.list_transitions, limit=limit)
         )
+        # The settled hour-average for the hour each edge fell in — the price
+        # actually paid, backfilled a day later. Surfaced beside the real-time
+        # `decision_price` that triggered the edge, so the card can show where
+        # the hour ended up. None until ComEd settles that hour.
+        hour_ends = {_containing_hour_ending(t.ts_utc) for t in transitions}
+        settled = await self.hass.async_add_executor_job(
+            partial(self._session_store.get_settled_prices, hour_ends)
+        )
         rows: list[dict] = []
         for t in transitions:
             context = {}
@@ -1069,6 +1088,7 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
                     "min_ahead": context.get("min_ahead"),
                     "slack_hours": plan.get("slack_hours"),
                     "hours_needed": plan.get("hours_needed"),
+                    "settled_price": settled.get(_containing_hour_ending(t.ts_utc)),
                 }
             )
         return rows

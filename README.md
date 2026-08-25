@@ -131,7 +131,10 @@ type: custom:comed-ev-history-card
 
 **Charge Activity** — a timeline of recent `charge_now` on/off transitions, each with
 the reason and the operands that produced it: a price-vs-threshold gauge (price against
-the ON bar `T − δ` and the threshold `T`), plus `σ`, `δ`, and mode. A start held by the
+the ON bar `T − δ` and the threshold `T`), plus `σ`, `δ`, and mode. On a charge start,
+once ComEd settles the hour, a second dot marks the settled hour-average with an arrow
+from the greyed real-time read that triggered the start, so you can see where the price
+ended up. A start held by the
 minimum-off lockout is annotated with how long it waited, and the footer counts cycles
 today. Reserve-gate deferrals — prevented charges the optimizer held off for a cheaper
 hour — appear inline as their own muted spans (held duration, the price it waited for).
