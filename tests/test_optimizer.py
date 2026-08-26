@@ -47,9 +47,11 @@ def _threshold(soc: float, **kw) -> float:
 # --- charge_threshold --------------------------------------------------------
 
 
-def test_threshold_zero_at_or_above_target():
-    assert charge_threshold(80, 80, price_floor=3, price_ceiling=15) == 0.0
-    assert charge_threshold(95, 80, price_floor=3, price_ceiling=15) == 0.0
+def test_threshold_floor_at_or_above_target():
+    # At/above target urgency clamps to 0 -> the curve's natural floor, not a
+    # misleading 0. The target_reached stop, not this value, ends the charge.
+    assert charge_threshold(80, 80, price_floor=3, price_ceiling=15) == pytest.approx(3.0)
+    assert charge_threshold(95, 80, price_floor=3, price_ceiling=15) == pytest.approx(3.0)
 
 
 def test_threshold_within_floor_ceiling_band():

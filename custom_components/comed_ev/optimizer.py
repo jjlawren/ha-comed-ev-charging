@@ -57,7 +57,6 @@ def charge_threshold(
     price_ceiling: float,
     min_soc: float = 0.0,
     gamma: float = 2.5,
-    hard_stop_at_target: bool = True,
 ) -> float:
     """Return the price ceiling T(SOC) below which we are willing to charge.
 
@@ -65,14 +64,12 @@ def charge_threshold(
     `price_floor` across the high-SOC band and only ramps toward `price_ceiling`
     when genuinely low — a gentle real-world curve rather than a linear ramp.
 
-    Returns 0.0 once the target is reached (never charge). With
-    `hard_stop_at_target=False` — used when a wired charge-accepting entity gives
-    the vehicle the stop — the curve is not zeroed at the target; it continues at
-    its natural boundary value (`price_floor`, since urgency clamps to 0), so
-    price still governs and the vehicle, not a lagging SOC reading, ends charging.
+    At (or above) the target, urgency clamps to 0 so the curve returns its natural
+    boundary value `price_floor`. The stop at the target is owned by the caller's
+    `target_reached` decision, not by zeroing this curve, so the displayed
+    threshold stays an honest price rather than a misleading 0 (a valid, and
+    occasionally negative, real-time price).
     """
-    if current_soc >= target_soc and hard_stop_at_target:
-        return 0.0
     urgency = soc_urgency(current_soc, target_soc, min_soc)
     return price_floor + (price_ceiling - price_floor) * urgency**gamma
 
@@ -364,10 +361,6 @@ def should_charge_now(
         price_ceiling=price_ceiling,
         min_soc=min_soc,
         gamma=gamma,
-        # A wired charge-accepting entity moves the stop to the vehicle, so the
-        # willingness curve is not hard-zeroed at the SOC target: price keeps
-        # governing and the vehicle ends the charge.
-        hard_stop_at_target=charge_accepting is None,
     )
     forecast = forecast or {}
 
