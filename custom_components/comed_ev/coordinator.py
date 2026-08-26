@@ -32,6 +32,7 @@ from .const import (
     CONF_CAPACITY_ENTITY,
     CONF_CAPACITY_KWH,
     CONF_CEILING_PCT,
+    CONF_CHARGE_ACCEPTING_ENTITY,
     CONF_CHARGE_RATE_ENTITY,
     CONF_CHARGE_RATE_KW,
     CONF_CURRENT_SOC_ENTITY,
@@ -352,6 +353,7 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
                 self.config_entry.data.get(CONF_CHARGE_RATE_ENTITY),
                 self.config_entry.data.get(CONF_CAPACITY_ENTITY),
                 self.config_entry.data.get(CONF_DEPARTURE_ENTITY),
+                self.config_entry.data.get(CONF_CHARGE_ACCEPTING_ENTITY),
             )
             if e
         ]
@@ -625,6 +627,9 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
                 charging=bool(self._charge_state),
                 deadband=deadband,
                 min_off_active=min_off_active,
+                charge_accepting=self._get_bool(
+                    self.config_entry.data.get(CONF_CHARGE_ACCEPTING_ENTITY)
+                ),
             )
             if decision.reason == REASON_MIN_OFF_LOCKOUT:
                 # A would-be ON was actually held; remember it for the eventual
@@ -1304,6 +1309,20 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
             return float(state.state)
         except (TypeError, ValueError):
             return None
+
+    def _get_bool(self, entity_id: str | None) -> bool | None:
+        """Read a boolean state, or None if not wired/missing/unavailable.
+
+        None means "let the SOC target decide the stop"; a real on/off means the
+        vehicle owns the stop. An unavailable reading falls back to None so a
+        flaky sensor cannot strand charging on or off.
+        """
+        if not entity_id:
+            return None
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in ("unknown", "unavailable", ""):
+            return None
+        return state.state == "on"
 
     def _charge_rate(self) -> float:
         """Return the charge rate in kW from the entity, else the constant.

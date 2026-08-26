@@ -16,6 +16,7 @@ from custom_components.comed_ev.optimizer import (
     REASON_CHEAPEST_HOURS,
     REASON_MIN_OFF_LOCKOUT,
     REASON_MUST_CHARGE,
+    REASON_NOT_ACCEPTING,
     REASON_TARGET_REACHED,
     SOURCE_DAY_AHEAD,
     SOURCE_DAY_OF,
@@ -89,6 +90,34 @@ def test_decision_target_reached_off():
     d = _decide(80, 0.1)
     assert d.charge_now is False
     assert d.reason == REASON_TARGET_REACHED
+
+
+def test_accepting_true_suppresses_soc_target_stop():
+    # SOC at target would normally stop, but the vehicle still accepts charge:
+    # a cheap price keeps charging so a lagging SOC read cannot cut it short.
+    d = _decide(80, 0.1, charge_accepting=True)
+    assert d.charge_now is True
+    assert d.reason == REASON_BELOW_THRESHOLD
+
+
+def test_accepting_true_still_respects_price_above_target():
+    # Suppressing the SOC stop does not force ON: a spike still releases.
+    d = _decide(80, 40.0, charge_accepting=True)
+    assert d.charge_now is False
+    assert d.reason == REASON_ABOVE_THRESHOLD
+
+
+def test_accepting_false_stops_below_target():
+    # The vehicle stopped taking current before the SOC target -> off.
+    d = _decide(50, 0.1, charge_accepting=False)
+    assert d.charge_now is False
+    assert d.reason == REASON_NOT_ACCEPTING
+
+
+def test_accepting_false_takes_precedence_over_target_reached():
+    d = _decide(80, 0.1, charge_accepting=False)
+    assert d.charge_now is False
+    assert d.reason == REASON_NOT_ACCEPTING
 
 
 def test_decision_below_threshold_on():

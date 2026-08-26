@@ -14,6 +14,8 @@ from math import ceil
 
 # Decision reason codes surfaced on the binary_sensor and in diagnostics.
 REASON_TARGET_REACHED = "target_reached"
+# The wired charge-accepting entity reports the vehicle stopped taking current.
+REASON_NOT_ACCEPTING = "not_accepting"
 REASON_MUST_CHARGE = "must_charge"
 REASON_BELOW_THRESHOLD = "below_threshold"
 REASON_ABOVE_THRESHOLD = "above_threshold"
@@ -55,6 +57,7 @@ def charge_threshold(
     price_ceiling: float,
     min_soc: float = 0.0,
     gamma: float = 2.5,
+    hard_stop_at_target: bool = True,
 ) -> float:
     """Return the price ceiling T(SOC) below which we are willing to charge.
 
@@ -62,9 +65,13 @@ def charge_threshold(
     `price_floor` across the high-SOC band and only ramps toward `price_ceiling`
     when genuinely low — a gentle real-world curve rather than a linear ramp.
 
-    Returns 0.0 once the target is reached (never charge).
+    Returns 0.0 once the target is reached (never charge). With
+    `hard_stop_at_target=False` — used when a wired charge-accepting entity gives
+    the vehicle the stop — the curve is not zeroed at the target; it continues at
+    its natural boundary value (`price_floor`, since urgency clamps to 0), so
+    price still governs and the vehicle, not a lagging SOC reading, ends charging.
     """
-    if current_soc >= target_soc:
+    if current_soc >= target_soc and hard_stop_at_target:
         return 0.0
     urgency = soc_urgency(current_soc, target_soc, min_soc)
     return price_floor + (price_ceiling - price_floor) * urgency**gamma
@@ -291,6 +298,7 @@ def should_charge_now(
     charging: bool = False,
     deadband: float = 0.0,
     min_off_active: bool = False,
+    charge_accepting: bool | None = None,
 ) -> ChargeDecision:
     """Decide whether to charge right now against the running hourly average.
 
@@ -300,6 +308,13 @@ def should_charge_now(
     the hourly average as `decision_price`. `forecast` covers the window up to
     the overnight end (opportunistic) or the departure (deadline).
 
+    The stop is shared by both modes and checked first. With `charge_accepting`
+    None (no entity wired) the SOC target is the stop, exactly as before. When an
+    entity is wired the vehicle owns the stop: `charge_accepting=False` stops
+    (`not_accepting`) and `charge_accepting=True` suppresses the SOC>=target stop
+    so a lagging or rounded SOC reading cannot cut charging short — the car runs
+    until it stops taking current.
+
     Two modes, distinguished by whether a deadline `plan` is given:
 
     Deadline mode completes the charge by departure but schedules it into the
@@ -308,7 +323,7 @@ def should_charge_now(
     charges when the current hour is among the cheapest `hours_needed` hours
     left, defers otherwise, and `must_charge` (slack <= 0) guarantees the
     deadline if the forecast was wrong.
-      1. target reached                     -> off  (target_reached)
+      1. stop reached (see above)           -> off  (target_reached/not_accepting)
       2. slack <= 0                         -> on   (must_charge)
       3. >= hours_needed cheaper hours left -> off  (cheaper_later)
       4. else                               -> on   (cheapest_hours)
@@ -335,7 +350,7 @@ def should_charge_now(
     `min_off_active` (True while inside the minimum-off-time window after a stop)
     blocks a fresh ON only: an already-charging run is unaffected and OFF is
     never delayed, so charging cannot re-engage faster than that window.
-      1. target reached                        -> off  (target_reached)
+      1. stop reached (see above)              -> off  (target_reached/not_accepting)
       2. decision_price >= on_threshold        -> off  (above_threshold)
       3. off and >= hours_needed cheaper left  -> off  (cheaper_later)
       4. off and still within min-off          -> off  (min_off_lockout)
@@ -349,6 +364,10 @@ def should_charge_now(
         price_ceiling=price_ceiling,
         min_soc=min_soc,
         gamma=gamma,
+        # A wired charge-accepting entity moves the stop to the vehicle, so the
+        # willingness curve is not hard-zeroed at the SOC target: price keeps
+        # governing and the vehicle ends the charge.
+        hard_stop_at_target=charge_accepting is None,
     )
     forecast = forecast or {}
 
@@ -372,8 +391,17 @@ def should_charge_now(
             min_ahead=min_ahead,
         )
 
-    if current_soc >= target_soc:
-        return decide(False, REASON_TARGET_REACHED)
+    # Stop source. With no charge-accepting entity wired, the SOC target is the
+    # stop (today's behavior). When one is wired the vehicle owns the decision:
+    # an OFF reading stops, and an ON reading suppresses the SOC>=target stop so
+    # a lagging or rounded SOC reading can no longer cut charging short — the car
+    # runs until it stops taking current. `None` means "not wired / unknown", so
+    # the SOC stop still guards against a flaky sensor.
+    if charge_accepting is None:
+        if current_soc >= target_soc:
+            return decide(False, REASON_TARGET_REACHED)
+    elif not charge_accepting:
+        return decide(False, REASON_NOT_ACCEPTING)
 
     if plan is not None:
         # Deadline mode: complete by departure, scheduled into the cheapest

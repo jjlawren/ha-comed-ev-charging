@@ -10,6 +10,9 @@ CONF_CAPACITY_ENTITY = "capacity_entity"
 CONF_EFFICIENCY = "efficiency"
 CONF_CURRENT_SOC_ENTITY = "current_soc_entity"
 CONF_TARGET_SOC_ENTITY = "target_soc_entity"
+# Optional boolean entity: on while the vehicle still accepts charge. When set,
+# it replaces the SOC>=target stop so the vehicle owns the decision to stop.
+CONF_CHARGE_ACCEPTING_ENTITY = "charge_accepting_entity"
 CONF_CHARGE_RATE_ENTITY = "charge_rate_entity"
 CONF_CHARGE_RATE_KW = "charge_rate_kw"
 CONF_DEPARTURE_ENTITY = "departure_entity"
