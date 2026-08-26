@@ -9,6 +9,7 @@ from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.core import HomeAssistant
 
 from .const import (
+    CONF_CHARGE_ACCEPTING_ENTITY,
     CONF_CURRENT_SOC_ENTITY,
     CONF_DEPARTURE_ENTITY,
     CONF_TARGET_SOC_ENTITY,
@@ -19,7 +20,12 @@ from .const import (
 )
 from .coordinator import ComEdConfigEntry
 
-TO_REDACT = {CONF_CURRENT_SOC_ENTITY, CONF_TARGET_SOC_ENTITY, CONF_DEPARTURE_ENTITY}
+TO_REDACT = {
+    CONF_CURRENT_SOC_ENTITY,
+    CONF_TARGET_SOC_ENTITY,
+    CONF_DEPARTURE_ENTITY,
+    CONF_CHARGE_ACCEPTING_ENTITY,
+}
 
 
 async def async_get_config_entry_diagnostics(

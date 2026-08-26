@@ -67,8 +67,10 @@ number entities.
 
 `reason` is one of `below_threshold` (opportunistic, price acceptable and the current
 hour is among the cheapest still needed), `above_threshold`, `target_reached`,
-`cheaper_later` (deferring for cheaper hours ahead), `cheapest_hours` (deadline, current
-hour is among the cheapest needed), and `must_charge` (deadline, out of slack).
+`not_accepting` (the wired vehicle-accepting-charge entity reports the vehicle stopped
+taking current — see below), `cheaper_later` (deferring for cheaper hours ahead),
+`cheapest_hours` (deadline, current hour is among the cheapest needed), and `must_charge`
+(deadline, out of slack).
 
 ## Session cost reporting
 
@@ -167,6 +169,13 @@ restart Home Assistant.
 You are asked for:
 - Battery capacity — a constant kWh or an entity — and charging efficiency.
 - **Current-SOC** entity (required) and **Target-SOC** entity (required).
+- **Vehicle-accepting-charge** entity (optional): a boolean (`binary_sensor`,
+  `input_boolean`, or `switch`) that is `on` while the vehicle still draws current.
+  When wired, it **replaces** the SOC-target stop: `charge_now` no longer drops when
+  the reported SOC reaches the target (which can fire early on a lagging or rounded
+  SOC reading) — instead the vehicle owns the stop, and `charge_now` releases only
+  when this entity reads `off` (`reason: not_accepting`). Price and deadline logic are
+  otherwise unchanged. Leave it unset to keep the SOC-target stop.
 - Charge rate — a constant kW or an entity.
 - **Departure** entity (optional): `input_datetime`, `schedule`, or a datetime `sensor`.
   A departure **in the past counts as unset** — the integration reverts to the

@@ -16,6 +16,7 @@ import voluptuous as vol
 from .const import (
     CONF_CAPACITY_ENTITY,
     CONF_CAPACITY_KWH,
+    CONF_CHARGE_ACCEPTING_ENTITY,
     CONF_CHARGE_RATE_ENTITY,
     CONF_CHARGE_RATE_KW,
     CONF_CURRENT_SOC_ENTITY,
@@ -76,6 +77,11 @@ def _base_schema(defaults: dict[str, Any]) -> vol.Schema:
             ),
             vol.Required(CONF_TARGET_SOC_ENTITY): selector.EntitySelector(
                 selector.EntitySelectorConfig(domain=["sensor", "number", "input_number"])
+            ),
+            vol.Optional(CONF_CHARGE_ACCEPTING_ENTITY): selector.EntitySelector(
+                selector.EntitySelectorConfig(
+                    domain=["binary_sensor", "input_boolean", "switch"]
+                )
             ),
             vol.Optional(CONF_CHARGE_RATE_KW, default=defaults.get(CONF_CHARGE_RATE_KW, 11.0)): _number(
                 0.5, 350, 0.5, "kW"
