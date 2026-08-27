@@ -839,7 +839,7 @@ async def test_get_transitions_service(hass: HomeAssistant, mock_client) -> None
 
     await hass.async_add_executor_job(
         lambda: coordinator._session_store.insert_transition(
-            ts_utc=datetime(2026, 8, 20, 1, 0, tzinfo=UTC),
+            ts_utc=datetime(2026, 8, 20, 7, 30, tzinfo=UTC),
             charging=True,
             reason="below_threshold",
             mode="opportunistic",
@@ -854,7 +854,7 @@ async def test_get_transitions_service(hass: HomeAssistant, mock_client) -> None
     )
     await hass.async_add_executor_job(
         lambda: coordinator._session_store.insert_transition(
-            ts_utc=datetime(2026, 8, 20, 2, 0, tzinfo=UTC),
+            ts_utc=datetime(2026, 8, 20, 8, 30, tzinfo=UTC),
             charging=False,
             reason="cheaper_later",
             mode="deadline",
@@ -867,11 +867,19 @@ async def test_get_transitions_service(hass: HomeAssistant, mock_client) -> None
         )
     )
 
-    # Settle the hour the start fell in (01:00 → hour ending 02:00 UTC).
-    await hass.async_add_executor_job(
-        lambda: coordinator._session_store.upsert_settled_prices(
-            {datetime(2026, 8, 20, 2, 0, tzinfo=UTC): 4.7}
+    # The session the start began: 07:30-08:30 UTC, 20 kWh split half over the
+    # hour ending 08:00 (3¢) and half over 09:00 (5¢) -> 80¢, so its weighted
+    # settled price is 4.0¢ — neither hour's price on its own.
+    sid = await hass.async_add_executor_job(
+        lambda: coordinator._session_store.insert_session(
+            started_utc=datetime(2026, 8, 20, 7, 30, tzinfo=UTC),
+            ended_utc=datetime(2026, 8, 20, 8, 30, tzinfo=UTC),
+            energy_kwh=20.0,
+            energy_source="meter",
         )
+    )
+    await hass.async_add_executor_job(
+        lambda: coordinator._session_store.update_session_cost(sid, 80.0, True)
     )
 
     response = await hass.services.async_call(
@@ -884,11 +892,11 @@ async def test_get_transitions_service(hass: HomeAssistant, mock_client) -> None
     assert rows[0]["slack_hours"] == 5
     assert rows[0]["hours_needed"] == 3
     # Oldest: the lockout-held start, with min_ahead flattened out and the
-    # settled hour-average joined on.
+    # session's weighted settled price joined on.
     assert rows[1]["lockout_held"] is True
     assert rows[1]["min_ahead"] == 3.5
-    assert rows[1]["settled_price"] == 4.7
-    # The stop's hour (03:00) has not settled — no price to surface.
+    assert rows[1]["settled_price"] == pytest.approx(4.0)
+    # A stop edge owns no session, so it never carries a settled price.
     assert rows[0]["settled_price"] is None
 
 

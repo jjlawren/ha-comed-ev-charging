@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from functools import partial
 import json
 import logging
@@ -119,14 +120,22 @@ _LOGGER = logging.getLogger(__name__)
 _DEFERRAL_REASONS = frozenset({REASON_CHEAPER_LATER})
 
 
-def _containing_hour_ending(ts: datetime) -> datetime:
-    """Top-of-hour that *ends* the hour containing `ts` (ComEd's convention).
+# A start edge and its session's `started_utc` come from the same charge-start
+# event, so they land within a poll of each other; this bounds the match against
+# a stray edge with no session of its own.
+_SESSION_EDGE_MATCH_TOL = timedelta(minutes=15)
 
-    Matches the `hour_ending` keys the settled-price table is stored under, so a
-    transition can be joined to the settled hour-average it fell in.
-    """
-    top = ts.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
-    return top + timedelta(hours=1)
+
+def _session_started_at(sessions: Iterable[Session], ts: datetime) -> Session | None:
+    """The session whose start is nearest `ts`, within the match tolerance."""
+    best: Session | None = None
+    best_delta = _SESSION_EDGE_MATCH_TOL
+    for session in sessions:
+        delta = abs(session.started_utc - ts)
+        if delta <= best_delta:
+            best_delta = delta
+            best = session
+    return best
 
 
 type ComEdConfigEntry = ConfigEntry[ComEdCoordinator]
@@ -1060,14 +1069,23 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
         transitions = await self.hass.async_add_executor_job(
             partial(self._session_store.list_transitions, limit=limit)
         )
-        # The settled hour-average for the hour each edge fell in — the price
-        # actually paid, backfilled a day later. Surfaced beside the real-time
+        # The settled dot on a charge-start edge carries the *whole session's*
+        # energy-weighted settled ¢/kWh, not the single hour the start fell in:
+        # a charge can span several settled hours, so no one hour's price is the
+        # price paid. Match each start edge to the session it began and divide
+        # the settled supply cost by the energy. Surfaced beside the real-time
         # `decision_price` that triggered the edge, so the card can show where
-        # the hour ended up. None until ComEd settles that hour.
-        hour_ends = {_containing_hour_ending(t.ts_utc) for t in transitions}
-        settled = await self.hass.async_add_executor_job(
-            partial(self._session_store.get_settled_prices, hour_ends)
-        )
+        # the session landed. None until ComEd settles all the session's hours.
+        sessions: list[Session] = []
+        if transitions:
+            stamps = [t.ts_utc for t in transitions]
+            sessions = await self.hass.async_add_executor_job(
+                partial(
+                    self._session_store.list_sessions,
+                    start_utc=min(stamps) - _SESSION_EDGE_MATCH_TOL,
+                    end_utc=max(stamps) + _SESSION_EDGE_MATCH_TOL,
+                )
+            )
         rows: list[dict] = []
         for t in transitions:
             context = {}
@@ -1077,6 +1095,19 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
                 except (ValueError, TypeError):
                     context = {}
             plan = context.get("plan") or {}
+            # Only a start edge owns a session, so only it carries the weighted
+            # settled price; a stop edge leaves it None.
+            settled_price = None
+            if t.charging:
+                session = _session_started_at(sessions, t.ts_utc)
+                if (
+                    session is not None
+                    and session.settled_cost_cents is not None
+                    and session.energy_kwh > 0
+                ):
+                    settled_price = round(
+                        session.settled_cost_cents / session.energy_kwh, 2
+                    )
             rows.append(
                 {
                     "kind": "edge",
@@ -1093,7 +1124,7 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
                     "min_ahead": context.get("min_ahead"),
                     "slack_hours": plan.get("slack_hours"),
                     "hours_needed": plan.get("hours_needed"),
-                    "settled_price": settled.get(_containing_hour_ending(t.ts_utc)),
+                    "settled_price": settled_price,
                 }
             )
         return rows

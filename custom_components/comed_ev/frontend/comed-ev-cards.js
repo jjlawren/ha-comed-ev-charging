@@ -605,9 +605,10 @@ function txGauge(t, scale) {
   const dotCls = neg ? "g-price neg" : "g-price";
   const zeroLine = scale.lo < 0 ? `<div class="g-zero" style="left:${pct(0)}%"></div>` : "";
 
-  // On a charge start, once the hour settles, show where the price ended up: a
-  // second dot at the settled hour-average, the triggering `decision_price` dot
-  // greyed, and an arrow along the bar from the read to the settled value.
+  // On a charge start, once the session settles, show where the price ended up:
+  // a second dot at the session's energy-weighted settled ¢/kWh (spanning every
+  // hour it charged, not just the start hour), the triggering `decision_price`
+  // dot greyed, and an arrow along the bar from the read to the settled value.
   const settled = t.charging && t.settled_price != null ? t.settled_price : null;
   const sPct = settled != null ? pct(settled) : null;
   const sNeg = settled != null && settled < 0;
@@ -633,7 +634,7 @@ function txGauge(t, scale) {
     if (v != null) cand.push({ pos: pct(v), text, cls, prio, ...opts });
   };
   if (settled != null) {
-    // The settled value leads; the greyed read follows, dropped if they collide.
+    // The settled session value leads; the greyed read follows, dropped if they collide.
     add(settled, cents(settled), sNeg ? "g-tick val settled neg" : "g-tick val settled", 0);
     add(t.decision_price, cents(t.decision_price), "g-tick val muted", 0.5);
   } else {
