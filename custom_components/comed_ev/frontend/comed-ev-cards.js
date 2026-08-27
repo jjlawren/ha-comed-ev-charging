@@ -259,8 +259,12 @@ class ComEdHistoryCard extends HTMLElement {
     this._config = { title: config.title || "Recent Charges", days: config.days ?? 14, ...config };
     this._built = false;
     this._sessions = null;
+    this._transitions = null;
     this._error = null;
     this._loading = false;
+    // Session ids the viewer has pinned open, kept across re-renders (hass
+    // pushes rebuild the table but leave the expanded set alone).
+    this._open = new Set();
   }
 
   getCardSize() {
@@ -295,6 +299,26 @@ class ComEdHistoryCard extends HTMLElement {
       const sessions = res?.response?.sessions ?? [];
       // Newest first for display.
       this._sessions = [...sessions].reverse();
+      // Best-effort: pull the transition feed so each session row can expand to
+      // its start/stop detail. A failure here leaves the sessions table intact;
+      // the rows just won't have expandable detail.
+      try {
+        const tlimit = Math.min(500, Math.max(60, sessions.length * 4 + 30));
+        const tres = await this._hass.callWS({
+          type: "execute_script",
+          sequence: [
+            {
+              service: "comed_ev.get_transitions",
+              data: { limit: tlimit },
+              response_variable: "_r",
+            },
+            { stop: "done", response_variable: "_r" },
+          ],
+        });
+        this._transitions = tres?.response?.transitions ?? [];
+      } catch (_e) {
+        this._transitions = [];
+      }
     } catch (err) {
       this._error = err?.message || String(err);
     } finally {
@@ -303,15 +327,36 @@ class ComEdHistoryCard extends HTMLElement {
     }
   }
 
+  // Pin/unpin a session row's detail. Toggling the DOM directly (rather than a
+  // full re-render) keeps the click responsive, and _open carries the state
+  // through the next hass-driven re-render.
+  _toggle(row) {
+    const id = row.getAttribute("data-id");
+    if (!id) return;
+    const willOpen = !this._open.has(id);
+    if (willOpen) this._open.add(id);
+    else this._open.delete(id);
+    row.classList.toggle("open", willOpen);
+    const detail = this.shadowRoot.querySelector(
+      `tr.detail[data-detail="${CSS.escape(id)}"]`,
+    );
+    if (detail) detail.classList.toggle("open", willOpen);
+  }
+
   _render() {
     if (!this._hass || !this._config) return;
     if (!this._built) {
       this.attachShadow({ mode: "open" });
-      this.shadowRoot.innerHTML = `<style>${BASE_CSS}${HISTORY_CSS}</style><ha-card></ha-card>`;
+      this.shadowRoot.innerHTML = `<style>${BASE_CSS}${HISTORY_CSS}${ACTIVITY_CSS}${DETAIL_CSS}</style><ha-card></ha-card>`;
       this._card = this.shadowRoot.querySelector("ha-card");
       this._built = true;
       this._card.addEventListener("click", (e) => {
-        if (e.target.closest(".refresh")) this._fetch();
+        if (e.target.closest(".refresh")) {
+          this._fetch();
+          return;
+        }
+        const row = e.target.closest("tr.session");
+        if (row) this._toggle(row);
       });
     }
 
@@ -331,8 +376,23 @@ class ComEdHistoryCard extends HTMLElement {
     } else if (!rows.length) {
       body = `<div class="empty">No charge sessions yet.</div>`;
     } else {
+      // Link each session to its start/stop edges in the transition feed so a
+      // row can expand to the Activity detail. Split the feed by polarity once;
+      // a shared price axis is scaled across every matched edge so gauges line
+      // up between sessions the way they do inside the Activity card.
+      const edges = (this._transitions || []).filter((t) => t.kind !== "deferral");
+      const starts = edges.filter((e) => e.charging);
+      const stops = edges.filter((e) => !e.charging);
+      const matched = rows.map((s) => ({
+        start: nearestEdge(starts, s.started),
+        stop: nearestEdge(stops, s.ended),
+      }));
+      const gScale = gaugeScale(
+        matched.flatMap((m) => [m.start, m.stop].filter(Boolean)),
+      );
+
       const trs = rows
-        .map((s) => {
+        .map((s, i) => {
           const soc =
             s.start_soc != null && s.end_soc != null
               ? `${Math.round(s.start_soc)}→${Math.round(s.end_soc)}`
@@ -352,15 +412,26 @@ class ComEdHistoryCard extends HTMLElement {
             s.savings != null
               ? `<td class="save">+${money(s.savings)}</td>`
               : `<td class="soc">—</td>`;
+          const m = matched[i];
+          const hasDetail = !!(m.start || m.stop);
+          const id = String(s.id);
+          const open = this._open.has(id);
+          const chev = hasDetail ? `<span class="chev"></span>` : "";
+          const detailRow = hasDetail
+            ? `
+            <tr class="detail${open ? " open" : ""}" data-detail="${id}">
+              <td colspan="6"><div class="detailwrap">${sessionDetail(m.start, m.stop, gScale)}</div></td>
+            </tr>`
+            : "";
           return `
-            <tr>
-              <td class="day"><span class="d">${fmtDay(s.started)}</span><span class="t">${fmtTime(s.started)}–${fmtTime(s.ended)}${status}</span></td>
+            <tr class="${hasDetail ? "session" : ""}${open ? " open" : ""}" data-id="${id}">
+              <td class="day">${chev}<span class="d">${fmtDay(s.started)}</span><span class="t">${fmtTime(s.started)}–${fmtTime(s.ended)}${status}</span></td>
               <td>${Number(s.energy_kwh).toFixed(1)}</td>
               <td>${cost}</td>
               <td>${rate}</td>
               ${save}
               <td class="soc">${soc}</td>
-            </tr>`;
+            </tr>${detailRow}`;
         })
         .join("");
       body = `
@@ -929,6 +1000,92 @@ const ACTIVITY_CSS = `
     font-size: 11px; color: var(--secondary-text-color); padding: 0 14px 8px 52px;
   }
   .held .lockicon { width: 12px; height: 12px; flex: none; }
+`;
+
+/* ==================== History ⇄ Activity linking ==================== */
+
+// Sessions record their bounds on the poll tick, while an edge can also fire on
+// a settings republish, so a session boundary can lag its edge by up to a poll
+// interval. Match the nearest edge of the right polarity within a tolerance
+// rather than assume the timestamps are identical.
+const EDGE_MATCH_TOL_MS = 15 * 60 * 1000;
+
+function nearestEdge(edges, iso) {
+  const target = new Date(iso).getTime();
+  let best = null;
+  let bestDelta = EDGE_MATCH_TOL_MS + 1;
+  for (const e of edges) {
+    const d = Math.abs(new Date(e.ts).getTime() - target);
+    if (d < bestDelta) {
+      bestDelta = d;
+      best = e;
+    }
+  }
+  return bestDelta <= EDGE_MATCH_TOL_MS ? best : null;
+}
+
+// One transition row rendered as a compact Activity block. Reuses the Activity
+// card's describe/gauge/pill helpers and its `.tx.start`/`.tx.stop` styling, so
+// the detail reads the same as the standalone feed — minus the timeline rail.
+function edgeBlock(t, scale) {
+  const mode =
+    t.mode === "deadline"
+      ? `<span class="mode deadline">Deadline</span>`
+      : `<span class="mode">Opportunistic</span>`;
+  return `
+    <div class="edge tx ${t.charging ? "start" : "stop"}">
+      <div class="body">
+        <div class="l1">
+          <span class="time">${fmtClock(t.ts)}</span>
+          <span class="label">${t.charging ? "Charging started" : "Charging stopped"}</span>
+          <span class="sp"></span>${mode}
+        </div>
+        <div class="why">${txDescribe(t)}</div>
+        ${txGauge(t, scale)}
+        <div class="ops">${txPills(t)}</div>
+      </div>
+    </div>`;
+}
+
+function sessionDetail(start, stop, scale) {
+  const edges = [start, stop].filter(Boolean);
+  if (!edges.length) {
+    return `<div class="nodetail">No transition detail retained for this session.</div>`;
+  }
+  const held =
+    start && start.lockout_held
+      ? `<div class="held">${lockSvg} start delayed by a minimum-off lockout</div>`
+      : "";
+  return edges.map((e) => edgeBlock(e, scale)).join("") + held;
+}
+
+const DETAIL_CSS = `
+  tr.session { cursor: pointer; }
+  tr.session .chev {
+    display: inline-block; width: 6px; height: 6px; margin-right: 7px;
+    border-right: 1.5px solid var(--secondary-text-color);
+    border-bottom: 1.5px solid var(--secondary-text-color);
+    transform: rotate(-45deg); transition: transform .15s ease; vertical-align: middle;
+  }
+  tr.session.open .chev { transform: rotate(45deg); }
+  @media (hover: hover) {
+    tr.session:hover { background: var(--secondary-background-color); }
+    tr.session:hover + tr.detail { display: table-row; }
+  }
+  tr.detail { display: none; }
+  tr.detail.open { display: table-row; }
+  tr.detail > td {
+    text-align: left; white-space: normal; padding: 0 14px 10px;
+    background: var(--secondary-background-color); border-bottom: 1px solid var(--divider-color);
+  }
+  .detailwrap { padding: 2px 0; }
+  .detail .edge.tx { display: block; padding: 0; }
+  .detail .edge .body { border-bottom: none; padding: 8px 0; }
+  .detail .edge + .edge .body { border-top: 1px dashed var(--divider-color); }
+  .detail .held { padding: 2px 0 4px; }
+  .detail .nodetail {
+    padding: 10px 2px; font-size: 12.5px; color: var(--secondary-text-color);
+  }
 `;
 
 /* ============================ Registration ============================ */
