@@ -123,7 +123,11 @@ entity or a second config entry still works; set `entity:` only to pin a specifi
 **Charge History** — recent settled sessions in a table: energy, cost, effective
 ¢/kWh, savings vs. the flat-rate baseline, and SOC start→end, with a monthly rollup.
 Calls the `comed_ev.get_sessions` service; the cost and savings columns need the
-distribution rate and flat-rate baseline set in options (see above).
+distribution rate and flat-rate baseline set in options (see above). Each row expands
+(click, or hover on a desktop) to the Charge Activity detail for its run — the start and
+stop transitions with their reason, gauge, and operands — matched from the same
+`comed_ev.get_transitions` feed; rows whose transitions have aged out of that feed stay
+flat.
 
 ```yaml
 type: custom:comed-ev-history-card
