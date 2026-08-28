@@ -89,49 +89,6 @@ def energy_needed_kwh(
     return to_battery / efficiency if efficiency > 0 else 0.0
 
 
-def estimate_charge_cost(
-    forecast: dict[datetime, ForecastHour],
-    energy_needed_kwh: float,
-    charge_rate_kw: float,
-    distribution_rate: float = 0.0,
-) -> ChargeCost | None:
-    """Estimate charge cost by filling energy from the cheapest forecast hours.
-
-    Picks the lowest-priced hours in the window and draws `charge_rate_kw` kWh
-    from each (a partial final hour) until `energy_needed_kwh` is met or the
-    window runs out. Forecast prices and `distribution_rate` are ¢/kWh; the
-    fixed distribution rate is added to every priced kWh, matching the settled
-    session cost. The returned costs are in dollars. Returns None when there is
-    nothing to price.
-    """
-    if energy_needed_kwh <= 0 or charge_rate_kw <= 0 or not forecast:
-        return None
-    remaining = energy_needed_kwh
-    supply_cents = 0.0
-    hours_used = 0
-    for hour in sorted(forecast.values(), key=lambda h: h.price):
-        if remaining <= 0:
-            break
-        kwh = min(charge_rate_kw, remaining)
-        supply_cents += kwh * hour.price
-        remaining -= kwh
-        hours_used += 1
-    energy = energy_needed_kwh - remaining
-    if energy <= 0:
-        return None
-    supply_cost = supply_cents / 100.0
-    distribution_cost = distribution_rate * energy / 100.0
-    cost = supply_cost + distribution_cost
-    return ChargeCost(
-        energy_kwh=energy,
-        estimated_cost=cost,
-        supply_cost=supply_cost,
-        distribution_cost=distribution_cost,
-        average_price=supply_cost / energy,
-        hours_used=hours_used,
-    )
-
-
 def cheapest_forecast_hour(
     forecast: dict[datetime, ForecastHour],
 ) -> ForecastHour | None:
@@ -183,13 +140,14 @@ class ForecastHour:
 
 @dataclass(frozen=True)
 class ChargeCost:
-    """Estimated cost of the upcoming charge, priced over the cheapest hours.
+    """Estimated cost of the upcoming charge over the planned charging hours.
 
-    `energy_kwh` is the wall energy actually priced; it is below the energy
-    needed only when the forecast window is too short to deliver all of it.
-    `estimated_cost` is the total in dollars (`supply_cost` +
-    `distribution_cost`); `average_price` is the supply-only dollars per kWh
-    (it excludes the fixed distribution rate).
+    Built by `project_schedule` from the hours it actually decides to charge,
+    so `energy_kwh` equals the schedule's `charging_energy_kwh` — the wall
+    energy it plans to draw, which falls short of the energy to target when the
+    window closes or prices stay too high to finish. `estimated_cost` is the
+    total in dollars (`supply_cost` + `distribution_cost`); `average_price` is
+    the supply-only dollars per kWh (it excludes the fixed distribution rate).
     """
 
     energy_kwh: float
@@ -465,7 +423,9 @@ class Schedule:
     `hours` is time-ordered. The summary fields fold the same projection:
     `charging_hours`/`charging_energy_kwh` count the planned-on hours and their
     wall energy, `ready_time` is the hour-ending at which `target_soc` is first
-    reached (None if the window never reaches it).
+    reached (None if the window never reaches it). `charge_cost` prices exactly
+    that planned-on energy over the hours the projection actually charges (None
+    when it charges nothing), so it and `charging_energy_kwh` always agree.
     """
 
     hours: list[ScheduleHour]
@@ -473,6 +433,7 @@ class Schedule:
     charging_hours: int
     charging_energy_kwh: float
     ready_time: datetime | None
+    charge_cost: ChargeCost | None
 
 
 def project_schedule(
@@ -489,6 +450,7 @@ def project_schedule(
     min_soc: float = 0.0,
     gamma: float = 2.5,
     departure: datetime | None = None,
+    distribution_rate: float = 0.0,
 ) -> Schedule:
     """Project the charge decision across every forecast hour.
 
@@ -512,6 +474,7 @@ def project_schedule(
     hours: list[ScheduleHour] = []
     charging_hours = 0
     charging_energy_kwh = 0.0
+    supply_cents = 0.0
     ready_time: datetime | None = None
 
     for hour in sorted(forecast.values(), key=lambda h: h.hour_ending):
@@ -556,7 +519,9 @@ def project_schedule(
         charging = decision.charge_now
         if charging:
             energy = energy_needed_kwh(soc, target_soc, capacity_kwh, efficiency)
-            charging_energy_kwh += min(charge_rate_kw, energy)
+            kwh = min(charge_rate_kw, energy)
+            charging_energy_kwh += kwh
+            supply_cents += kwh * hour.price
             soc = min(target_soc, soc + soc_gain_per_hour)
             charging_hours += 1
         if ready_time is None and soc >= target_soc:
@@ -565,12 +530,26 @@ def project_schedule(
             ScheduleHour(hour.hour_ending, hour.price, hour.source, charging, soc)
         )
 
+    charge_cost: ChargeCost | None = None
+    if charging_energy_kwh > 0:
+        supply_cost = supply_cents / 100.0
+        distribution_cost = distribution_rate * charging_energy_kwh / 100.0
+        charge_cost = ChargeCost(
+            energy_kwh=charging_energy_kwh,
+            estimated_cost=supply_cost + distribution_cost,
+            supply_cost=supply_cost,
+            distribution_cost=distribution_cost,
+            average_price=supply_cost / charging_energy_kwh,
+            hours_used=charging_hours,
+        )
+
     return Schedule(
         hours=hours,
         mode=mode,
         charging_hours=charging_hours,
         charging_energy_kwh=charging_energy_kwh,
         ready_time=ready_time,
+        charge_cost=charge_cost,
     )
 
 
