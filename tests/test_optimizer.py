@@ -28,7 +28,6 @@ from custom_components.comed_ev.optimizer import (
     cheapest_forecast_hour,
     cheapest_hour_ahead_price,
     energy_needed_kwh,
-    estimate_charge_cost,
     plan_charge,
     project_schedule,
     should_charge_now,
@@ -490,7 +489,7 @@ def test_energy_needed_zero_at_or_above_target():
     assert energy_needed_kwh(90, 80, 75, 0.9) == 0.0
 
 
-# --- estimate_charge_cost ----------------------------------------------------
+# --- cheapest_forecast_hour --------------------------------------------------
 
 
 def _forecast(*prices: float) -> dict:
@@ -501,60 +500,6 @@ def _forecast(*prices: float) -> dict:
         )
         for i, p in enumerate(prices)
     }
-
-
-def test_cost_picks_cheapest_hours_first():
-    # Need 10 kWh at 10 kW/hr -> one full hour; the 4¢ hour is chosen over 20¢.
-    forecast = _forecast(20.0, 4.0, 30.0)
-    cost = estimate_charge_cost(forecast, energy_needed_kwh=10.0, charge_rate_kw=10.0)
-    assert cost is not None
-    assert cost.hours_used == 1
-    assert cost.energy_kwh == pytest.approx(10.0)
-    assert cost.estimated_cost == pytest.approx(0.40)  # 10 kWh * 4¢ = 40¢
-    assert cost.average_price == pytest.approx(0.04)
-
-
-def test_cost_spans_hours_with_partial_final():
-    # Need 15 kWh at 10 kW/hr: full 4¢ hour (10 kWh) + 5 kWh of the 6¢ hour.
-    forecast = _forecast(6.0, 4.0, 30.0)
-    cost = estimate_charge_cost(forecast, energy_needed_kwh=15.0, charge_rate_kw=10.0)
-    assert cost is not None
-    assert cost.hours_used == 2
-    # (10 * 4¢) + (5 * 6¢) = 70¢ = $0.70 over 15 kWh.
-    assert cost.estimated_cost == pytest.approx(0.70)
-    assert cost.average_price == pytest.approx(0.70 / 15.0)
-
-
-def test_cost_includes_distribution_rate():
-    # 10 kWh at 4¢ supply + 5¢ distribution -> 90¢ total, split out.
-    forecast = _forecast(20.0, 4.0, 30.0)
-    cost = estimate_charge_cost(
-        forecast, energy_needed_kwh=10.0, charge_rate_kw=10.0, distribution_rate=5.0
-    )
-    assert cost is not None
-    assert cost.supply_cost == pytest.approx(0.40)
-    assert cost.distribution_cost == pytest.approx(0.50)  # 10 kWh * 5¢
-    assert cost.estimated_cost == pytest.approx(0.90)
-    # Average price is supply-only; it excludes the 5¢ distribution rate.
-    assert cost.average_price == pytest.approx(0.04)
-
-
-def test_cost_capped_by_short_window():
-    # Only two hours available -> 20 kWh priced though 30 kWh is needed.
-    forecast = _forecast(5.0, 7.0)
-    cost = estimate_charge_cost(forecast, energy_needed_kwh=30.0, charge_rate_kw=10.0)
-    assert cost is not None
-    assert cost.hours_used == 2
-    assert cost.energy_kwh == pytest.approx(20.0)
-
-
-def test_cost_none_when_nothing_to_price():
-    assert estimate_charge_cost({}, 10.0, 10.0) is None
-    assert estimate_charge_cost(_forecast(5.0), 0.0, 10.0) is None
-    assert estimate_charge_cost(_forecast(5.0), 10.0, 0.0) is None
-
-
-# --- cheapest_forecast_hour --------------------------------------------------
 
 
 def test_cheapest_forecast_hour_picks_lowest_price():
@@ -636,6 +581,35 @@ def test_schedule_deadline_reserves_the_cheapest_hours():
     }
     assert schedule.charging_energy_kwh == pytest.approx(20.0)
     assert schedule.ready_time == base + timedelta(hours=3)
+    # Cost prices exactly the two charged hours: 10 kWh @2¢ + 10 kWh @3¢ = 50¢.
+    assert schedule.charge_cost is not None
+    assert schedule.charge_cost.energy_kwh == pytest.approx(20.0)
+    assert schedule.charge_cost.supply_cost == pytest.approx(0.50)
+    assert schedule.charge_cost.estimated_cost == pytest.approx(0.50)
+    assert schedule.charge_cost.average_price == pytest.approx(0.025)
+
+
+def test_schedule_cost_adds_distribution_over_charged_energy():
+    # Distribution (6.5¢) applies to every charged kWh, on top of supply.
+    forecast = _hourly_forecast(5.0, 4.0, 2.0, 3.0, 6.0, 7.0)
+    base = NOW.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    schedule = project_schedule(
+        NOW, forecast, 50.0, 80.0, **_SCHED, **_BAND,
+        departure=base + timedelta(hours=6), distribution_rate=6.5,
+    )
+    cost = schedule.charge_cost
+    assert cost is not None
+    assert cost.supply_cost == pytest.approx(0.50)  # 10@2¢ + 10@3¢
+    assert cost.distribution_cost == pytest.approx(20.0 * 6.5 / 100.0)  # $1.30
+    assert cost.estimated_cost == pytest.approx(1.80)
+    # Average price stays supply-only; it excludes distribution.
+    assert cost.average_price == pytest.approx(0.025)
+
+
+def test_schedule_no_charging_has_no_cost():
+    forecast = _hourly_forecast(2.0, 2.0, 2.0)
+    schedule = project_schedule(NOW, forecast, 80.0, 80.0, **_SCHED, **_BAND)
+    assert schedule.charge_cost is None
 
 
 def test_schedule_projected_soc_rises_then_holds_at_target():

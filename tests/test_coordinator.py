@@ -311,7 +311,11 @@ async def test_decay_reweights_recent_sessions(
 async def test_energy_needed_and_cost_sensors(
     hass: HomeAssistant, mock_client
 ) -> None:
-    """Energy-needed and overnight cost/avg-price sensors are published."""
+    """Energy-needed and the schedule-priced cost/avg-price estimate are set."""
+    from datetime import timedelta
+
+    from homeassistant.util import dt as dt_util
+
     hass.states.async_set("sensor.ev_soc", "20")
     hass.states.async_set("number.ev_target", "80")
 
@@ -319,20 +323,22 @@ async def test_energy_needed_and_cost_sensors(
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
+    coordinator = entry.runtime_data
+
+    # Publish cheap 2¢ day-of estimates across the overnight window so the
+    # schedule charges and the estimate prices exactly those hours.
+    now = dt_util.utcnow()
+    first_end = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    coordinator._dual_today = {first_end + timedelta(hours=i): 2.0 for i in range(12)}
+    data = coordinator._build_data()
 
     # 60% of 75 kWh = 45 kWh to battery / 0.9 efficiency = 50 kWh from the wall.
-    energy = hass.states.get("sensor.comed_ev_charging_energy_needed_to_target")
-    assert energy is not None
-    assert float(energy.state) == pytest.approx(50.0)
-
-    # No departure -> the overnight window still yields a cost estimate.
-    cost = hass.states.get("sensor.comed_ev_charging_estimated_charge_cost")
-    assert cost is not None
-    assert float(cost.state) > 0.0
-
-    avg = hass.states.get("sensor.comed_ev_charging_estimated_charge_average_price")
-    assert avg is not None
-    assert float(avg.state) > 0.0
+    assert data.energy_needed_kwh == pytest.approx(50.0)
+    # The estimate prices only the energy the schedule plans to draw, all at 2¢.
+    assert data.charge_cost is not None
+    assert data.charge_cost.energy_kwh > 0.0
+    assert data.charge_cost.estimated_cost > 0.0
+    assert data.charge_cost.average_price == pytest.approx(0.02)
 
 
 async def test_schedule_excludes_unpublished_fallback_hours(

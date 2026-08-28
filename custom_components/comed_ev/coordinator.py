@@ -102,7 +102,6 @@ from .optimizer import (
     build_forecast,
     clamp,
     energy_needed_kwh,
-    estimate_charge_cost,
     hour_buckets,
     plan_charge,
     project_schedule,
@@ -595,13 +594,6 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
                     efficiency,
                     forecast,
                 )
-            if energy_needed:
-                charge_cost = estimate_charge_cost(
-                    forecast,
-                    energy_needed,
-                    self._charge_rate(),
-                    self._distribution_rate(),
-                )
             # Deadline scheduling needs the whole hours of charging still
             # required, so it can reserve the cheapest hours before departure.
             rate = self._charge_rate()
@@ -649,7 +641,8 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
             # The schedule card is a forward view of published rate estimates, so
             # drop hours carried only by the flat current-hour fallback (rates
             # not yet posted, e.g. past midnight) — they would render as a run of
-            # identical rows. Decision and cost above still use the full forecast.
+            # identical rows. The live decision above still uses the full forecast;
+            # the schedule and its cost estimate are the published-hours view.
             published = {
                 end: hour
                 for end, hour in forecast.items()
@@ -669,7 +662,12 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
                     min_soc=self.settings.min_soc,
                     gamma=self.settings.gamma,
                     departure=departure,
+                    distribution_rate=self._distribution_rate(),
                 )
+                # The cost estimate prices only the energy the schedule plans to
+                # draw, over the hours it actually charges — so it agrees with the
+                # schedule's energy total rather than a separate cheapest-fill.
+                charge_cost = schedule.charge_cost
 
         return ComEdData(
             live_price=live,
