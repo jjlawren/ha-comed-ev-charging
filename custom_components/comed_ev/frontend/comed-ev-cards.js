@@ -1091,9 +1091,15 @@ const DETAIL_CSS = `
 
 /* ============================ Registration ============================ */
 
-customElements.define("comed-ev-schedule-card", ComEdScheduleCard);
-customElements.define("comed-ev-history-card", ComEdHistoryCard);
-customElements.define("comed-ev-activity-card", ComEdActivityCard);
+// Guard each define: if the module ever evaluates twice in one document, a
+// bare define() throws on the first duplicate and aborts the rest of the file,
+// leaving later cards unregistered ("Custom element not found").
+const define = (tag, cls) => {
+  if (!customElements.get(tag)) customElements.define(tag, cls);
+};
+define("comed-ev-schedule-card", ComEdScheduleCard);
+define("comed-ev-history-card", ComEdHistoryCard);
+define("comed-ev-activity-card", ComEdActivityCard);
 
 window.customCards = window.customCards || [];
 window.customCards.push(
