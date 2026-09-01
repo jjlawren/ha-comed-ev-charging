@@ -713,7 +713,14 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
                 end_utc=end_utc,
             )
         )
-        return [self._session_to_dict(s) for s in sessions]
+        # Drop 0 kWh sessions: a charge that recorded no energy is noise, not a
+        # charge worth pricing or showing on the Recent Charges card.
+        # Drop sessions that show 0 kWh: a run that recorded no measurable
+        # energy is noise, not a charge worth pricing or listing. Round to the
+        # displayed precision so sub-mWh rows are dropped too.
+        return [
+            self._session_to_dict(s) for s in sessions if round(s.energy_kwh, 3)
+        ]
 
     def _session_to_dict(self, session: Session) -> dict:
         """Serialize a session for service output, with derived cost fields."""

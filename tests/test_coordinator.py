@@ -835,6 +835,30 @@ async def test_get_sessions_service(hass: HomeAssistant, mock_client) -> None:
     assert rows[0]["energy_source"] == "meter"
 
 
+async def test_get_sessions_skips_zero_energy(
+    hass: HomeAssistant, mock_client
+) -> None:
+    """A stored 0 kWh row is not returned by the get_sessions service."""
+    from datetime import UTC, datetime
+
+    hass.states.async_set("sensor.ev_soc", "20")
+    hass.states.async_set("number.ev_target", "80")
+    coordinator = await _build_coordinator(hass)
+
+    for kwh in (0.0, 0.0001, 5.0):  # exact 0, rounds-to-0.000, real charge
+        await hass.async_add_executor_job(
+            lambda kwh=kwh: coordinator._session_store.insert_session(
+                started_utc=datetime(2026, 8, 20, 7, 30, tzinfo=UTC),
+                ended_utc=datetime(2026, 8, 20, 8, 30, tzinfo=UTC),
+                energy_kwh=kwh,
+                energy_source="meter",
+            )
+        )
+
+    rows = await coordinator.async_get_sessions()
+    assert [r["energy_kwh"] for r in rows] == [5.0]
+
+
 async def test_get_transitions_service(hass: HomeAssistant, mock_client) -> None:
     """The get_transitions service returns recorded edges, newest first."""
     from datetime import UTC, datetime
