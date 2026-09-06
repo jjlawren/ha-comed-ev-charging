@@ -127,9 +127,6 @@ SETTLE_INTERVAL_SECONDS = 3600
 HOURLY_FEED_INTERVAL = 3600
 # Central-local hour after which we refresh the next-day feed to catch publish.
 NEXT_DAY_PUBLISH_HOUR = 16
-# Central-local hour marking the end of the "overnight" cost window used to
-# estimate a charge when no departure time is configured.
-OVERNIGHT_END_HOUR = 10
 
 # Setup backfill: seed the rolling window from the 5-minute API in chunks.
 BACKFILL_CHUNK_DAYS = 7
