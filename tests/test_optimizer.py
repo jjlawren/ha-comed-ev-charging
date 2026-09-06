@@ -620,8 +620,9 @@ def test_schedule_projected_soc_rises_then_holds_at_target():
         departure=base + timedelta(hours=6),
     )
     socs = [h.projected_soc for h in schedule.hours]
-    # 50 (skip), 50 (skip), 65 (charge), 80 (charge), 80, 80 — never falls, capped.
-    assert socs == pytest.approx([50.0, 50.0, 65.0, 80.0, 80.0, 80.0])
+    # 50 (skip), 50 (skip), 65 (charge), 80 (charge), 80 — rises, caps, then the
+    # idle tail past the target is trimmed to the one hour after it is reached.
+    assert socs == pytest.approx([50.0, 50.0, 65.0, 80.0, 80.0])
 
 
 def test_schedule_deadline_charges_pricey_hours_when_window_is_tight():
@@ -647,6 +648,8 @@ def test_schedule_opportunistic_charges_only_below_threshold():
     assert _charging_ends(schedule) == {base + timedelta(hours=2)}
     assert schedule.charging_hours == 1
     assert schedule.ready_time is None
+    # Target never reached, so every estimated hour is shown — no trimming.
+    assert len(schedule.hours) == 6
 
 
 def test_schedule_opportunistic_reserves_cheapest_hours_under_threshold():

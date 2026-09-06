@@ -81,7 +81,6 @@ from .const import (
     MODE_AUTO,
     MODE_MANUAL,
     NEXT_DAY_PUBLISH_HOUR,
-    OVERNIGHT_END_HOUR,
     SESSION_DB_FILENAME,
     SETTLE_INTERVAL_SECONDS,
     STORAGE_KEY,
@@ -572,9 +571,10 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
             plan = None
             now = dt_util.utcnow()
             departure = self._get_departure()
-            # Cost is priced over the deadline window, or an overnight window
-            # when no departure is set; the plan is deadline-only.
-            window_end = departure if departure is not None else self._overnight_end(now)
+            # Cost and schedule span the deadline window, or — with no departure —
+            # every future hour that has a published price estimate; the plan is
+            # deadline-only.
+            window_end = departure if departure is not None else self._estimate_horizon()
             if window_end is not None and window_end > now:
                 forecast = build_forecast(
                     now,
@@ -1198,15 +1198,16 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
         if self.data is not None:
             self.async_set_updated_data(self._build_data())
 
-    def _overnight_end(self, now: datetime) -> datetime:
-        """Return the next OVERNIGHT_END_HOUR (Central) as a UTC datetime."""
-        central = now.astimezone(CENTRAL)
-        end = central.replace(
-            hour=OVERNIGHT_END_HOUR, minute=0, second=0, microsecond=0
-        )
-        if central >= end:
-            end += timedelta(days=1)
-        return dt_util.as_utc(end)
+    def _estimate_horizon(self) -> datetime | None:
+        """Latest hour-ending covered by a published estimate feed, or None.
+
+        Bounds the no-departure forecast: it runs to the last hour any estimate
+        feed reaches (day-ahead or day-of), so the schedule shows every future
+        hour with a real price rather than stopping at a static overnight cutoff.
+        The caller drops it when it does not reach past the current hour.
+        """
+        ends = [*self._day_ahead, *self._dual_today]
+        return max(ends) if ends else None
 
     # --- feeds & history -----------------------------------------------------
 
@@ -1407,7 +1408,7 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
             parsed = dt_util.parse_datetime(state.state)
             departure = dt_util.as_utc(parsed) if parsed else None
         # input_datetime cannot be cleared, so a past time means "no deadline":
-        # fall back to the overnight window instead of a stale departure.
+        # fall back to the no-departure window instead of a stale departure.
         if departure is None or departure <= dt_util.utcnow():
             return None
         return departure

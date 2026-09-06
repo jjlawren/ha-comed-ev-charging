@@ -261,7 +261,7 @@ def should_charge_now(
     until the hour completes; the running current-hour average is the best live
     proxy. A single 5-minute point is too noisy to decide on, so callers pass
     the hourly average as `decision_price`. `forecast` covers the window up to
-    the overnight end (opportunistic) or the departure (deadline).
+    the last estimated hour (opportunistic) or the departure (deadline).
 
     The stop is shared by both modes and checked first. With `charge_accepting`
     None (no entity wired) the SOC target is the stop, exactly as before. When an
@@ -529,6 +529,12 @@ def project_schedule(
         hours.append(
             ScheduleHour(hour.hour_ending, hour.price, hour.source, charging, soc)
         )
+
+    # Show every projected hour, but once the target is reached the rest is an
+    # idle tail — keep only through the hour after it is first reached.
+    if ready_time is not None:
+        cutoff = ready_time + timedelta(hours=1)
+        hours = [h for h in hours if h.hour_ending <= cutoff]
 
     charge_cost: ChargeCost | None = None
     if charging_energy_kwh > 0:
