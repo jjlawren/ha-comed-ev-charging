@@ -35,8 +35,11 @@ async def _unload_entries(hass):
 
 
 def _sample_points() -> tuple[PricePoint, ...]:
-    base = datetime(2026, 8, 19, 3, 0, tzinfo=CENTRAL)
     from datetime import timedelta
+
+    # Relative to today: a fixed date ages out of the rolling history window.
+    base = datetime.now(CENTRAL).replace(hour=3, minute=0, second=0, microsecond=0)
+    base -= timedelta(days=1)
 
     # A cheap overnight run with one spike, in dollars/kWh, chronological order.
     prices = [0.02, 0.025, 0.03, 0.02, 0.5, 0.03, 0.04]
