@@ -424,6 +424,12 @@ async def test_charge_rate_entity_zero_falls_back_to_constant(
         },
     )
     assert coordinator._charge_rate() == 11.0
+    # A live spike above the nominal rating is capped; a lower reading is kept.
+    hass.states.async_set("sensor.evse_power", "45")
+    assert coordinator._charge_rate() == 11.0
+    hass.states.async_set("sensor.evse_power", "6.6")
+    assert coordinator._charge_rate() == 6.6
+    hass.states.async_set("sensor.evse_power", "0")
 
     now = dt_util.utcnow()
     first_end = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)

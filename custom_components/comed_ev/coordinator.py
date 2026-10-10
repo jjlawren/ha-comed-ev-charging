@@ -1370,13 +1370,19 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
         would zero the projected SOC gain and disable the cheapest-hour reserve,
         painting every affordable hour as charging. Fall back to the nominal
         constant instead.
+
+        A reading above the nominal constant is capped to it: a charger cannot
+        exceed its rating, and a transient spike would shrink `hours_needed`,
+        flip deadline slack from negative to positive and short-cycle
+        `must_charge` against `cheaper_later`.
         """
+        nominal = self.config_entry.data.get(CONF_CHARGE_RATE_KW, 0.0)
         entity = self.config_entry.data.get(CONF_CHARGE_RATE_ENTITY)
         if entity:
             value = self._get_float(entity)
             if value is not None and value > 0:
-                return value
-        return self.config_entry.data.get(CONF_CHARGE_RATE_KW, 0.0)
+                return min(value, nominal) if nominal > 0 else value
+        return nominal
 
     def _capacity_kwh(self) -> float:
         """Return the battery capacity in kWh from the entity, else the constant.
