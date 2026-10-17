@@ -184,6 +184,17 @@ class ComEdSettings:
 
 
 @dataclass
+class PastHour:
+    """A finished hour of today, for the schedule card's look-back rows."""
+
+    hour_ending: datetime
+    estimated: float | None  # ¢/kWh, the dual feed's estimate
+    settled: float | None  # ¢/kWh, None until ComEd settles the hour
+    soc: float | None  # last SOC seen in the hour
+    charging: bool  # charge_now was on at some point in the hour
+
+
+@dataclass
 class ComEdData:
     """The per-tick result exposed to entities."""
 
@@ -212,6 +223,8 @@ class ComEdData:
     # Savings ($) of that session vs. the flat-rate baseline, None when the
     # baseline is unset or the session has no settled cost.
     last_session_savings: float | None = None
+    # Finished hours of the current Central day, oldest first.
+    past_hours: list[PastHour] = field(default_factory=list)
 
 
 @dataclass
@@ -288,6 +301,11 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
         self._last_suggest_day: date | None = None
         self._day_ahead: dict[datetime, float] = {}
         self._dual_today: dict[datetime, float] = {}
+        self._dual_settled: dict[datetime, float] = {}
+        # hour_ending -> (last SOC, charged) for today's hours.
+        # ponytail: in memory, a restart loses today's SOC/charging marks;
+        # persist in _serialize_state if that matters.
+        self._hour_log: dict[datetime, tuple[float | None, bool]] = {}
         self._unsub_state: list = []
         # Durable per-session cost store, and in-flight session tracking.
         self._session_store = SessionStore(
@@ -685,7 +703,41 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
             last_session=self._last_session,
             last_session_cost=self._session_total_cost(self._last_session),
             last_session_savings=self._session_savings(self._last_session),
+            past_hours=self._past_hours(current_soc),
         )
+
+    def _past_hours(self, current_soc: float | None) -> list[PastHour]:
+        """Log this tick into its hour, then list today's finished hours."""
+        now = dt_util.utcnow()
+        # UTC hour math sidesteps DST; Central offsets are whole hours.
+        ending = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        prev_soc, prev_charging = self._hour_log.get(ending, (None, False))
+        self._hour_log[ending] = (
+            current_soc if current_soc is not None else prev_soc,
+            prev_charging or bool(self._charge_state),
+        )
+
+        # An hour belongs to the day it starts on (HE 24 is the next midnight).
+        today = dt_util.now(CENTRAL).date()
+
+        def is_today(he: datetime) -> bool:
+            return (he - timedelta(hours=1)).astimezone(CENTRAL).date() == today
+
+        self._hour_log = {he: v for he, v in self._hour_log.items() if is_today(he)}
+        ends = {*self._dual_today, *self._dual_settled, *self._hour_log}
+        hours = []
+        for he in sorted(e for e in ends if e <= now and is_today(e)):
+            soc, charging = self._hour_log.get(he, (None, False))
+            hours.append(
+                PastHour(
+                    he,
+                    self._dual_today.get(he),
+                    self._dual_settled.get(he),
+                    soc,
+                    charging,
+                )
+            )
+        return hours
 
     def _flat_rate(self) -> float | None:
         """Flat ¢/kWh baseline for savings, or None when disabled (0)."""
@@ -1219,6 +1271,9 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
                 h.hour_ending: h.estimated * 100.0
                 for h in dual
                 if h.estimated is not None
+            }
+            self._dual_settled = {
+                h.hour_ending: h.actual * 100.0 for h in dual if h.actual is not None
             }
             if dt_util.now(CENTRAL).hour >= NEXT_DAY_PUBLISH_HOUR:
                 next_day = await self._client.get_next_day()

@@ -75,10 +75,21 @@ def _cheapest_hour_attrs(data: ComEdData) -> Mapping[str, Any]:
 
 
 def _schedule_attrs(data: ComEdData) -> Mapping[str, Any]:
+    past_hours = [
+        {
+            "hour_ending": h.hour_ending.isoformat(),
+            "estimated": None if h.estimated is None else round(h.estimated, 2),
+            "settled": None if h.settled is None else round(h.settled, 2),
+            "charging": h.charging,
+            "soc": None if h.soc is None else round(h.soc, 1),
+        }
+        for h in data.past_hours
+    ]
     schedule = data.schedule
     if schedule is None:
-        return {}
+        return {"past_hours": past_hours} if past_hours else {}
     attrs: dict[str, Any] = {
+        "past_hours": past_hours,
         "mode": schedule.mode,
         "charging_energy_kwh": round(schedule.charging_energy_kwh, 2),
         "hours": [
@@ -332,7 +343,7 @@ class ComEdSensor(ComEdEntity, SensorEntity):
     entity_description: ComEdSensorDescription
     # The charge_schedule sensor's hours[] is a per-hour list that shifts each
     # hour; keep it live in state for the card but out of the recorder.
-    _unrecorded_attributes = frozenset({"hours"})
+    _unrecorded_attributes = frozenset({"hours", "past_hours"})
 
     def __init__(
         self, coordinator: ComEdCoordinator, description: ComEdSensorDescription
