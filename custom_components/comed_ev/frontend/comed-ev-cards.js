@@ -299,15 +299,21 @@ const SCHEDULE_CSS = `
   .ghost { position: absolute; inset: 0 auto 0 0; border-radius: 4px; }
   .row.past.charge .ghost { background: color-mix(in srgb, ${CHARGE} 18%, transparent); }
   .row.past.skip .ghost { background: color-mix(in srgb, ${WARM} 10%, transparent); }
+  /* Settled is the real price: give the skipped bar more weight than an upcoming one. */
+  .row.past.skip .fill { background: color-mix(in srgb, ${WARM} 60%, transparent); }
   /* Let the estimate tick poke past the bar's top and bottom edges. */
   .row.past .track { overflow: visible; }
   .delta { position: absolute; top: 0; bottom: 0; }
-  /* Solid tints, so the red reads the same over a teal or an amber bar. */
+  /* Over is part of the settled bar, so it is solid; under is only the missed
+     estimate, so it is a light hatch. Opaque red reads the same over teal or amber. */
   .delta.over {
-    background: color-mix(in srgb, var(--error-color, #db4437) 30%, var(--card-background-color, #fff));
+    background: color-mix(in srgb, var(--error-color, #db4437) 85%, var(--card-background-color, #fff));
     border-radius: 0 4px 4px 0;
   }
-  .delta.under { background: color-mix(in srgb, ${GOOD} 25%, var(--card-background-color, #fff)); }
+  .delta.under {
+    background: repeating-linear-gradient(-45deg,
+      color-mix(in srgb, ${GOOD} 60%, transparent) 0 2px, transparent 2px 5px);
+  }
   .est-tick {
     position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px;
     border-radius: 1px; background: var(--primary-text-color); opacity: .35;
