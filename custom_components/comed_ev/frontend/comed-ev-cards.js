@@ -312,7 +312,7 @@ const SCHEDULE_CSS = `
   }
   .delta.under {
     background: repeating-linear-gradient(-45deg,
-      color-mix(in srgb, ${GOOD} 45%, transparent) 0 2px, transparent 2px 5px);
+      color-mix(in srgb, ${GOOD} 60%, transparent) 0 2px, transparent 2px 5px);
   }
   .est-tick {
     position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px;
