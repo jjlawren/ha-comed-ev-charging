@@ -302,9 +302,8 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
         self._day_ahead: dict[datetime, float] = {}
         self._dual_today: dict[datetime, float] = {}
         self._dual_settled: dict[datetime, float] = {}
-        # hour_ending -> (last SOC, charged) for today's hours.
-        # ponytail: in memory, a restart loses today's SOC/charging marks;
-        # persist in _serialize_state if that matters.
+        # hour_ending -> (last SOC, charged) for today's hours; persisted so a
+        # restart keeps today's marks. _past_hours drops other days.
         self._hour_log: dict[datetime, tuple[float | None, bool]] = {}
         self._unsub_state: list = []
         # Durable per-session cost store, and in-flight session tracking.
@@ -355,6 +354,10 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
                     self._history.append((parsed, float(price)))
             self._prune_history()
         if isinstance(stored, dict):
+            for he_iso, soc, charging in stored.get("hour_log") or []:
+                parsed = dt_util.parse_datetime(he_iso)
+                if parsed is not None:
+                    self._hour_log[parsed] = (soc, bool(charging))
             energy = stored.get("energy") or {}
             self._energy_vehicle_total = float(energy.get("vehicle", 0.0))
             self._energy_evse_total = float(energy.get("evse", 0.0))
@@ -1306,9 +1309,13 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
         return [[ts.isoformat(), p] for ts, p in self._history]
 
     def _serialize_state(self) -> dict:
-        """Serialize history, energy totals, and settings to JSON-storable form."""
+        """Serialize history, energy totals, settings and hour log to JSON-storable form."""
         return {
             "history": self._serialize_history(),
+            "hour_log": [
+                [he.isoformat(), soc, charging]
+                for he, (soc, charging) in self._hour_log.items()
+            ],
             "settings": asdict(self.settings),
             "energy": {
                 "vehicle": self._energy_vehicle_total,
