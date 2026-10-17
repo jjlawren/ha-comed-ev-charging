@@ -1183,3 +1183,59 @@ async def test_past_departure_treated_as_unset(
         {"timestamp": past.timestamp()},
     )
     assert coordinator._get_departure() is None
+
+
+async def test_past_hours_pair_prices_with_logged_soc(
+    hass: HomeAssistant, mock_client, freezer
+) -> None:
+    """Finished hours of today carry estimate, settled price and ending SOC."""
+    from datetime import UTC, datetime
+
+    # 15:20 CDT; today's hours run from the 01:00 CDT hour-ending (06:00 UTC).
+    freezer.move_to(datetime(2026, 8, 20, 20, 20, tzinfo=UTC))
+    hass.states.async_set("sensor.ev_soc", "40")
+    hass.states.async_set("number.ev_target", "80")
+    coordinator = await _build_coordinator(hass)
+    coordinator._past_hours(40.0)  # logs SOC into the 16:00 CDT hour
+    coordinator._past_hours(42.0)  # last reading of that hour wins
+
+    # Yesterday's last hour (HE 24 = 00:00 CDT today) must be dropped.
+    yesterday_he24 = datetime(2026, 8, 20, 5, tzinfo=UTC)
+    he15 = datetime(2026, 8, 20, 20, tzinfo=UTC)
+    he16 = datetime(2026, 8, 20, 21, tzinfo=UTC)
+    coordinator._dual_today = {yesterday_he24: 1.0, he15: 4.2, he16: 5.0}
+    coordinator._dual_settled = {yesterday_he24: 1.1, he15: 3.8}
+
+    freezer.move_to(datetime(2026, 8, 20, 21, 5, tzinfo=UTC))
+    hours = coordinator._past_hours(43.0)
+
+    assert [h.hour_ending for h in hours] == [he15, he16]
+    assert (hours[0].estimated, hours[0].settled, hours[0].soc) == (4.2, 3.8, None)
+    assert (hours[1].estimated, hours[1].settled, hours[1].soc) == (5.0, None, 42.0)
+
+
+async def test_hour_log_survives_restart(
+    hass: HomeAssistant, mock_client, freezer, hass_storage
+) -> None:
+    """A stored hour log reloads, so today's ending SOC is kept after a restart."""
+    from datetime import UTC, datetime
+
+    from custom_components.comed_ev.const import STORAGE_KEY
+
+    freezer.move_to(datetime(2026, 8, 20, 21, 5, tzinfo=UTC))
+    he16 = datetime(2026, 8, 20, 21, tzinfo=UTC)
+    hass_storage[STORAGE_KEY] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": STORAGE_KEY,
+        "data": {"history": [], "hour_log": [[he16.isoformat(), 42.0, True]]},
+    }
+    hass.states.async_set("sensor.ev_soc", "43")
+    hass.states.async_set("number.ev_target", "80")
+    coordinator = await _build_coordinator(hass)
+
+    hours = coordinator._past_hours(43.0)
+
+    assert [(h.hour_ending, h.soc, h.charging) for h in hours] == [(he16, 42.0, True)]
+    saved = coordinator._serialize_state()["hour_log"]
+    assert [he16.isoformat(), 42.0, True] in saved

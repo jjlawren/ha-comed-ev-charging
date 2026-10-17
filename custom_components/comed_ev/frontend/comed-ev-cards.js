@@ -160,6 +160,11 @@ class ComEdScheduleCard extends HTMLElement {
       this.attachShadow({ mode: "open" });
       this.shadowRoot.innerHTML = `<style>${BASE_CSS}${SCHEDULE_CSS}</style><ha-card></ha-card>`;
       this._card = this.shadowRoot.querySelector("ha-card");
+      this._card.addEventListener("click", (e) => {
+        if (!e.target.closest(".past-toggle")) return;
+        this._showPast = !this._showPast;
+        this._render();
+      });
       this._built = true;
     }
     if (!st) {
@@ -171,12 +176,55 @@ class ComEdScheduleCard extends HTMLElement {
 
     const a = st.attributes || {};
     const hours = Array.isArray(a.hours) ? a.hours : [];
-    const maxPrice = Math.max(0.01, ...hours.map((h) => h.price || 0));
+    const past = Array.isArray(a.past_hours) ? a.past_hours : [];
+    const maxPrice = Math.max(
+      0.01,
+      ...hours.map((h) => h.price || 0),
+      ...past.map((h) => Math.max(h.estimated || 0, h.settled || 0))
+    );
+    const barW = (p) => Math.max(6, Math.round((p / maxPrice) * 100));
     const deadline = a.mode === "deadline";
+
+    // Past hours: a ghost bar to the estimate under a solid bar to the settled
+    // price; the price column shows settled, or the estimate until it settles.
+    const pastHtml = past
+      .map((h) => {
+        const cls = h.charging ? "row past charge" : "row past skip";
+        const settled = h.settled != null;
+        const ew = h.estimated != null ? barW(h.estimated) : null;
+        const sw = settled ? barW(h.settled) : null;
+        // Unsettled: a ghost bar to the estimate. Settled: shade the gap between
+        // estimate and settled, red when it settled higher, green when lower.
+        let ghost = "";
+        if (ew != null && sw == null) {
+          ghost = `<div class="ghost" style="width:${ew}%"></div>`;
+        } else if (ew != null && sw !== ew) {
+          const lo = Math.min(ew, sw);
+          ghost = `<div class="delta ${sw > ew ? "over" : "under"}" style="left:${lo}%;width:${Math.max(ew, sw) - lo}%"></div>`;
+        }
+        // The tick sits above the solid bar so it shows when the estimate is lower.
+        const tick = ew != null ? `<div class="est-tick" style="left:${ew}%"></div>` : "";
+        const fill = settled ? `<div class="fill" style="width:${sw}%"></div>` : "";
+        const shown = settled ? h.settled : h.estimated;
+        const soc = h.soc == null ? "" : `${Math.round(h.soc)}%`;
+        const tip = `Est ${cents(h.estimated)} · Settled ${settled ? cents(h.settled) : "pending"}`;
+        return `
+          <div class="${cls}" title="${tip}">
+            <span class="time">${fmtHour(h.hour_ending)}</span>
+            <div class="track">${fill}${ghost}${tick}</div>
+            <span class="price${settled ? "" : " est"}">${shown == null ? "—" : Number(shown).toFixed(1)}</span>
+            <span class="soc">${soc}</span>
+          </div>`;
+      })
+      .join("");
+    const pastBlock = past.length
+      ? `<button class="past-toggle">${this._showPast ? "Hide" : "Show"} earlier today (${past.length})</button>
+         ${this._showPast ? pastHtml + `<div class="now-line"></div>` : ""}`
+      : "";
 
     const rowsHtml = hours
       .map((h) => {
-        const w = Math.max(6, Math.round((h.price / maxPrice) * 100));
+        const w = barW(h.price);
         const cls = h.charging ? "row charge" : "row skip";
         const bolt = h.charging ? boltSvg("mini-bolt") : "";
         const soc = h.projected_soc == null ? "" : `${Math.round(h.projected_soc)}%`;
@@ -207,6 +255,7 @@ class ComEdScheduleCard extends HTMLElement {
         ${modeChip}${readyChip}
       </div>
       <div class="sched">
+        ${pastBlock}
         ${rowsHtml || `<div class="empty">No forecast hours yet.</div>`}
       </div>
       <div class="foot">
@@ -246,6 +295,31 @@ const SCHEDULE_CSS = `
   .row.charge .price { color: ${CHARGE}; }
   .row.skip .fill { background: color-mix(in srgb, ${WARM} 30%, transparent); }
   .row.skip .price { color: ${WARM}; }
+  .row.past .time { opacity: .6; }
+  .ghost { position: absolute; inset: 0 auto 0 0; border-radius: 4px; }
+  .row.past.charge .ghost { background: color-mix(in srgb, ${CHARGE} 18%, transparent); }
+  .row.past.skip .ghost { background: color-mix(in srgb, ${WARM} 10%, transparent); }
+  /* Let the estimate tick poke past the bar's top and bottom edges. */
+  .row.past .track { overflow: visible; }
+  .delta { position: absolute; top: 0; bottom: 0; }
+  /* Solid tints, so the red reads the same over a teal or an amber bar. */
+  .delta.over {
+    background: color-mix(in srgb, var(--error-color, #db4437) 30%, var(--card-background-color, #fff));
+    border-radius: 0 4px 4px 0;
+  }
+  .delta.under { background: color-mix(in srgb, ${GOOD} 25%, var(--card-background-color, #fff)); }
+  .est-tick {
+    position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px;
+    border-radius: 1px; background: var(--primary-text-color); opacity: .35;
+  }
+  .row .price.est { opacity: .55; font-weight: 500; }
+  .past-toggle {
+    all: unset; cursor: pointer; display: block; width: 100%; box-sizing: border-box;
+    padding: 4px 8px 6px; font-size: 12px; color: var(--secondary-text-color);
+  }
+  .past-toggle:hover { color: var(--primary-text-color); }
+  .past-toggle:focus-visible { outline: 2px solid ${CHARGE}; border-radius: 6px; }
+  .now-line { height: 1px; margin: 4px 8px; background: var(--divider-color); }
   .mini-bolt {
     position: absolute; right: 5px; top: 50%; transform: translateY(-50%);
     width: 11px; height: 11px; color: #fff;
