@@ -218,7 +218,7 @@ class ComEdScheduleCard extends HTMLElement {
       })
       .join("");
     const pastBlock = past.length
-      ? `<button class="past-toggle">${this._showPast ? "Hide" : "Show"} earlier today (${past.length})</button>
+      ? `<button class="past-toggle">${this._showPast ? "Hide" : "Show"} earlier (${past.length})</button>
          ${this._showPast ? pastHtml + `<div class="now-line"></div>` : ""}`
       : "";
 
