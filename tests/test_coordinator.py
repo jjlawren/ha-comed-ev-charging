@@ -1214,6 +1214,30 @@ async def test_past_hours_pair_prices_with_logged_soc(
     assert (hours[1].estimated, hours[1].settled, hours[1].soc) == (5.0, None, 42.0)
 
 
+async def test_past_hours_reach_into_yesterday_early_morning(
+    hass: HomeAssistant, mock_client, freezer
+) -> None:
+    """Before 08:00 the list still holds the last 8 finished hours."""
+    from datetime import UTC, datetime
+
+    # 02:30 CDT: two finished hours today; six more come from yesterday.
+    freezer.move_to(datetime(2026, 8, 21, 7, 30, tzinfo=UTC))
+    hass.states.async_set("sensor.ev_soc", "40")
+    hass.states.async_set("number.ev_target", "80")
+    coordinator = await _build_coordinator(hass)
+    ends = [datetime(2026, 8, 20, h, tzinfo=UTC) for h in range(20, 24)] + [
+        datetime(2026, 8, 21, h, tzinfo=UTC) for h in range(8)
+    ]
+    coordinator._dual_settled = {he: 3.0 for he in ends}
+
+    hours = coordinator._past_hours(40.0)
+
+    # HE 19:00 CDT yesterday (00:00 UTC) through HE 02:00 CDT today.
+    assert [h.hour_ending for h in hours] == ends[4:12]
+    # Hours before the window are pruned.
+    assert min(coordinator._dual_settled) == ends[4]
+
+
 async def test_hour_log_survives_restart(
     hass: HomeAssistant, mock_client, freezer, hass_storage
 ) -> None:
