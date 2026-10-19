@@ -17,6 +17,7 @@ const DOMAIN = "comed_ev";
 const CHARGE = "#0b93a6"; // electric teal — charging
 const WARM = "#cf7a1c"; // amber — price / skipped
 const GOOD = "#2b9968"; // green — savings
+const BOLT = "#f2b705"; // yellow — charging hour marker
 
 const BASE_CSS = `
   :host { display: block; }
@@ -161,9 +162,22 @@ class ComEdScheduleCard extends HTMLElement {
       this.shadowRoot.innerHTML = `<style>${BASE_CSS}${SCHEDULE_CSS}</style><ha-card></ha-card>`;
       this._card = this.shadowRoot.querySelector("ha-card");
       this._card.addEventListener("click", (e) => {
+        const row = e.target.closest(".row.past");
+        if (row) {
+          // Tap a past hour to show its estimate and settled price.
+          this._openHour = this._openHour === row.dataset.hour ? null : row.dataset.hour;
+          this._render();
+          return;
+        }
         if (!e.target.closest(".past-toggle")) return;
         this._showPast = !this._showPast;
         this._render();
+      });
+      this._card.addEventListener("keydown", (e) => {
+        if ((e.key === "Enter" || e.key === " ") && e.target.matches(".row.past")) {
+          e.preventDefault();
+          e.target.click();
+        }
       });
       this._built = true;
     }
@@ -177,62 +191,86 @@ class ComEdScheduleCard extends HTMLElement {
     const a = st.attributes || {};
     const hours = Array.isArray(a.hours) ? a.hours : [];
     const past = Array.isArray(a.past_hours) ? a.past_hours : [];
-    const maxPrice = Math.max(
-      0.01,
-      ...hours.map((h) => h.price || 0),
-      ...past.map((h) => Math.max(h.estimated || 0, h.settled || 0))
+    const axis = niceAxis(
+      [...hours.map((h) => h.price), ...past.flatMap((h) => [h.estimated, h.settled])]
+        .filter((v) => v != null)
+        .map(Number)
     );
-    const barW = (p) => Math.max(6, Math.round((p / maxPrice) * 100));
+    const pos = (p) => Math.max(0, Math.min(100, ((p - axis.lo) / (axis.hi - axis.lo)) * 100));
+    const zero = pos(0);
+    // Bars grow from the zero line: right for a positive price, left for a negative one.
+    // A spike past the axis end is cut at the edge and gets a break mark.
+    const bar = (p, cls) => {
+      const clip = p > axis.hi ? " clip hi" : p < axis.lo ? " clip lo" : "";
+      return `<div class="${cls}${clip}" style="left:${Math.min(pos(p), zero)}%;width:${Math.abs(pos(p) - zero)}%"></div>`;
+    };
+    const bolt = (on) => `<span class="boltcol">${on ? boltSvg("mini-bolt") : ""}</span>`;
+    const zeroLine = axis.lo < 0 ? `<div class="zero" style="left:${zero}%"></div>` : "";
+    const scaleHtml = `
+      <div class="row scale">
+        <span></span>
+        <div class="axis">${axis.ticks.map((t) => `<span style="left:${pos(t)}%">${+t.toFixed(2)}¢</span>`).join("")}</div>
+        <span></span><span></span><span></span>
+      </div>`;
     const deadline = a.mode === "deadline";
 
     // Past hours: a ghost bar to the estimate under a solid bar to the settled
-    // price; the price column shows settled, or the estimate until it settles.
+    // price; the price column shows settled over the estimate, or only the
+    // estimate until it settles.
     const pastHtml = past
       .map((h) => {
-        const cls = h.charging ? "row past charge" : "row past skip";
         const settled = h.settled != null;
-        const ew = h.estimated != null ? barW(h.estimated) : null;
-        const sw = settled ? barW(h.settled) : null;
+        const shown = settled ? h.settled : h.estimated;
+        const cls = `row past ${h.charging ? "charge" : "skip"}${shown < 0 ? " neg" : ""}`;
+        const ew = h.estimated != null ? pos(h.estimated) : null;
+        const sw = settled ? pos(h.settled) : null;
         // Unsettled: a ghost bar to the estimate. Settled: shade the gap between
         // estimate and settled, red when it settled higher, green when lower.
         let ghost = "";
         if (ew != null && sw == null) {
-          ghost = `<div class="ghost" style="width:${ew}%"></div>`;
+          ghost = bar(h.estimated, "ghost");
         } else if (ew != null && sw !== ew) {
           const lo = Math.min(ew, sw);
-          ghost = `<div class="delta ${sw > ew ? "over" : "under"}" style="left:${lo}%;width:${Math.max(ew, sw) - lo}%"></div>`;
+          const clip = Math.max(h.estimated, h.settled) > axis.hi ? " clip hi" : Math.min(h.estimated, h.settled) < axis.lo ? " clip lo" : "";
+          ghost = `<div class="delta ${sw > ew ? "over" : "under"}${clip}" style="left:${lo}%;width:${Math.max(ew, sw) - lo}%"></div>`;
         }
         // The tick sits above the solid bar so it shows when the estimate is lower.
         const tick = ew != null ? `<div class="est-tick" style="left:${ew}%"></div>` : "";
-        const fill = settled ? `<div class="fill" style="width:${sw}%"></div>` : "";
-        const shown = settled ? h.settled : h.estimated;
+        const fill = settled ? bar(h.settled, "fill") : "";
         const soc = h.soc == null ? "" : `${Math.round(h.soc)}%`;
-        const tip = `Est ${cents(h.estimated)} · Settled ${settled ? cents(h.settled) : "pending"}`;
+        const open = this._openHour === h.hour_ending;
+        const diff = settled && h.estimated != null ? h.settled - h.estimated : null;
+        const detail = open
+          ? `<div class="detail">Estimated ${cents(h.estimated)} · Settled ${settled ? cents(h.settled) : "pending"}${
+              diff ? ` <b class="${diff > 0 ? "over" : "under"}">(${diff > 0 ? "+" : ""}${cents(diff)})</b>` : ""
+            }</div>`
+          : "";
         return `
-          <div class="${cls}" title="${tip}">
+          <div class="${cls}" data-hour="${h.hour_ending}" role="button" tabindex="0" aria-expanded="${open}">
             <span class="time">${fmtHour(h.hour_ending)}</span>
-            <div class="track">${fill}${ghost}${tick}</div>
+            <div class="track">${zeroLine}${fill}${ghost}${tick}</div>
             <span class="price${settled ? "" : " est"}">${shown == null ? "—" : Number(shown).toFixed(1)}</span>
+            ${bolt(h.charging)}
             <span class="soc">${soc}</span>
-          </div>`;
+          </div>${detail}`;
       })
       .join("");
     const pastBlock = past.length
       ? `<button class="past-toggle">${this._showPast ? "Hide" : "Show"} earlier (${past.length})</button>
+         ${scaleHtml}
          ${this._showPast ? pastHtml + `<div class="now-line"></div>` : ""}`
-      : "";
+      : scaleHtml;
 
     const rowsHtml = hours
       .map((h) => {
-        const w = barW(h.price);
-        const cls = h.charging ? "row charge" : "row skip";
-        const bolt = h.charging ? boltSvg("mini-bolt") : "";
+        const cls = `row ${h.charging ? "charge" : "skip"}${h.price < 0 ? " neg" : ""}`;
         const soc = h.projected_soc == null ? "" : `${Math.round(h.projected_soc)}%`;
         return `
           <div class="${cls}">
             <span class="time">${fmtHour(h.hour_ending)}</span>
-            <div class="track"><div class="fill" style="width:${w}%"></div>${bolt}</div>
+            <div class="track">${zeroLine}${bar(h.price, "fill")}</div>
             <span class="price">${Number(h.price).toFixed(1)}</span>
+            ${bolt(h.charging)}
             <span class="soc">${soc}</span>
           </div>`;
       })
@@ -254,7 +292,7 @@ class ComEdScheduleCard extends HTMLElement {
         <span class="sp"></span>
         ${modeChip}${readyChip}
       </div>
-      <div class="sched">
+      <div class="sched" style="--grid:${100 / (axis.ticks.length - 1)}%">
         ${pastBlock}
         ${rowsHtml || `<div class="empty">No forecast hours yet.</div>`}
       </div>
@@ -271,7 +309,7 @@ class ComEdScheduleCard extends HTMLElement {
 const SCHEDULE_CSS = `
   .sched { padding: 6px 10px 8px; }
   .row {
-    display: grid; grid-template-columns: 54px 1fr 42px 44px;
+    display: grid; grid-template-columns: 54px 1fr 42px 12px 32px;
     align-items: center; gap: 10px; padding: 6px 8px; border-radius: 9px;
   }
   .row .time {
@@ -281,14 +319,42 @@ const SCHEDULE_CSS = `
   .track {
     height: 20px; border-radius: 5px; position: relative; overflow: hidden;
     background: var(--secondary-background-color);
+    /* Gridlines at each axis tick; niceAxis() makes the ticks evenly spaced. */
+    background-image: linear-gradient(to right, var(--divider-color) 1px, transparent 1px);
+    background-size: var(--grid) 100%;
   }
-  .fill { position: absolute; inset: 0 auto 0 0; border-radius: 4px; }
+  .fill { position: absolute; top: 0; bottom: 0; border-radius: 4px; }
+  .zero {
+    position: absolute; top: -3px; bottom: -3px; width: 1px; margin-left: -.5px; z-index: 1;
+    background: var(--secondary-text-color);
+  }
+  .row.scale { padding-top: 0; padding-bottom: 0; }
+  .axis {
+    position: relative; height: 14px;
+    font-size: 9.5px; font-weight: 600; color: var(--secondary-text-color);
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  .axis span { position: absolute; transform: translateX(-50%); }
+  .axis span:first-child { transform: none; }
+  .axis span:last-child { transform: translateX(-100%); }
   .row .price {
     font-size: 13px; font-weight: 600; text-align: right;
     font-variant-numeric: tabular-nums;
   }
+  .row.past { cursor: pointer; }
+  .row.past:hover, .row.past[aria-expanded="true"] { background: var(--secondary-background-color); }
+  .row.past:focus-visible { outline: 2px solid ${CHARGE}; }
+  .row.past[aria-expanded="true"] { border-radius: 9px 9px 0 0; }
+  .detail {
+    padding: 0 8px 8px 72px; font-size: 12px; color: var(--secondary-text-color);
+    font-variant-numeric: tabular-nums;
+    background: var(--secondary-background-color); border-radius: 0 0 9px 9px;
+  }
+  .detail b { font-weight: 600; }
+  .detail .over { color: var(--error-color, #db4437); }
+  .detail .under { color: ${GOOD}; }
   .row .soc {
-    font-size: 12px; color: var(--secondary-text-color); text-align: right;
+    font-size: 12px; color: var(--secondary-text-color);
     font-variant-numeric: tabular-nums;
   }
   .row.charge .fill { background: ${CHARGE}; }
@@ -296,11 +362,14 @@ const SCHEDULE_CSS = `
   .row.skip .fill { background: color-mix(in srgb, ${WARM} 30%, transparent); }
   .row.skip .price { color: ${WARM}; }
   .row.past .time { opacity: .6; }
-  .ghost { position: absolute; inset: 0 auto 0 0; border-radius: 4px; }
+  .ghost { position: absolute; top: 0; bottom: 0; border-radius: 4px; }
   .row.past.charge .ghost { background: color-mix(in srgb, ${CHARGE} 18%, transparent); }
   .row.past.skip .ghost { background: color-mix(in srgb, ${WARM} 10%, transparent); }
   /* Settled is the real price: give the skipped bar more weight than an upcoming one. */
   .row.past.skip .fill { background: color-mix(in srgb, ${WARM} 60%, transparent); }
+  /* A negative price pays you to charge: green, like the history card. */
+  .row.neg .fill { background: ${GOOD}; }
+  .row.neg .price { color: ${GOOD}; }
   /* Let the estimate tick poke past the bar's top and bottom edges. */
   .row.past .track { overflow: visible; }
   .delta { position: absolute; top: 0; bottom: 0; }
@@ -326,11 +395,37 @@ const SCHEDULE_CSS = `
   .past-toggle:hover { color: var(--primary-text-color); }
   .past-toggle:focus-visible { outline: 2px solid ${CHARGE}; border-radius: 6px; }
   .now-line { height: 1px; margin: 4px 8px; background: var(--divider-color); }
-  .mini-bolt {
-    position: absolute; right: 5px; top: 50%; transform: translateY(-50%);
-    width: 11px; height: 11px; color: #fff;
+  /* Pull the bolt in so it sits tight and centered between price and SOC. */
+  .boltcol { display: flex; justify-content: center; margin: 0 -4px; }
+  .mini-bolt { width: 12px; height: 12px; color: ${BOLT}; }
+  /* Axis break: a slanted gap near the cut end of a clipped spike. */
+  .clip::after {
+    content: ""; position: absolute; top: -2px; bottom: -2px; width: 3px;
+    background: var(--card-background-color, #fff); transform: skewX(-20deg);
   }
+  .clip.hi::after { right: 7px; }
+  .clip.lo::after { left: 7px; }
 `;
+
+// Price axis for the schedule card. It always includes 0, and its ends are
+// rounded to a 1/2/5 step so the ticks fall on even cents.
+function niceAxis(vals) {
+  // Cap the axis at 3x the upper-quartile price so one spike (a 150¢ hour) does
+  // not shrink every other bar to a sliver; bars past the cap are clipped.
+  // ponytail: quartile heuristic, tune the 3x if normal evenings get clipped.
+  const sorted = [...vals].sort((x, y) => x - y);
+  const cap = Math.max(1, 3 * (sorted[Math.floor(0.75 * (sorted.length - 1))] || 0));
+  const lo0 = Math.max(-cap, Math.min(0, ...vals));
+  const hi0 = Math.min(cap, Math.max(1, ...vals));
+  const raw = (hi0 - lo0) / 4;
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 5, 10].map((m) => m * mag).find((s) => s >= raw);
+  const lo = Math.floor(lo0 / step) * step;
+  const hi = Math.ceil(hi0 / step) * step;
+  const ticks = [];
+  for (let i = 0; lo + i * step <= hi + step / 2; i++) ticks.push(lo + i * step);
+  return { lo, hi, ticks };
+}
 
 /* ============================ History card ============================ */
 
