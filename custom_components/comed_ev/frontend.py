@@ -19,7 +19,7 @@ from .const import DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 URL_BASE = f"/{DOMAIN}_frontend"
-CARDS_JS = "comed-ev-cards.js"
+LOADER_JS = "comed-ev-loader.js"
 _REGISTERED = f"{DOMAIN}_frontend_registered"
 
 
@@ -34,11 +34,10 @@ async def async_register_frontend(hass: HomeAssistant) -> None:
     hass.data[_REGISTERED] = True
 
     integration = await async_get_integration(hass, DOMAIN)
-    source = integration.file_path / "frontend" / CARDS_JS
-    # Cache the bundle so the iOS app can reuse it when the network is flaky
-    # (e.g. while roaming between the internal and external URL). The version
-    # query busts the cache when the integration updates.
+    source = integration.file_path / "frontend"
+    # Cache the files; the version query busts the cache when the integration
+    # updates. The loader retries the card bundle if its fetch fails.
     await hass.http.async_register_static_paths(
-        [StaticPathConfig(f"{URL_BASE}/{CARDS_JS}", str(source), True)]
+        [StaticPathConfig(URL_BASE, str(source), True)]
     )
-    add_extra_js_url(hass, f"{URL_BASE}/{CARDS_JS}?v={integration.version}")
+    add_extra_js_url(hass, f"{URL_BASE}/{LOADER_JS}?v={integration.version}")
