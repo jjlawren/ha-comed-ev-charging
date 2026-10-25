@@ -1185,6 +1185,42 @@ async def test_past_departure_treated_as_unset(
     assert coordinator._get_departure() is None
 
 
+async def test_missed_deadline_keeps_charging(
+    hass: HomeAssistant, mock_client, freezer
+) -> None:
+    """A deadline run still charging at departure stays on until the stop."""
+    from datetime import timedelta
+
+    from homeassistant.util import dt as dt_util
+
+    from custom_components.comed_ev.const import CONF_DEPARTURE_ENTITY
+    from custom_components.comed_ev.optimizer import REASON_MUST_CHARGE
+
+    hass.states.async_set("sensor.ev_soc", "20")
+    hass.states.async_set("number.ev_target", "80")
+    coordinator = await _build_coordinator(
+        hass, extra_data={CONF_DEPARTURE_ENTITY: "input_datetime.ev_departure"}
+    )
+    coordinator._last_hourly_price = 99.0  # far above any threshold
+    departure = dt_util.utcnow() + timedelta(minutes=30)
+    hass.states.async_set(
+        "input_datetime.ev_departure",
+        departure.isoformat(),
+        {"timestamp": departure.timestamp()},
+    )
+    coordinator.data = coordinator._build_data()
+    assert coordinator.data.decision.reason == REASON_MUST_CHARGE
+
+    freezer.move_to(departure + timedelta(minutes=5))
+    coordinator.data = coordinator._build_data()
+    assert coordinator.data.decision.charge_now is True
+    assert coordinator.data.decision.reason == REASON_MUST_CHARGE
+
+    hass.states.async_set("sensor.ev_soc", "80")
+    coordinator.data = coordinator._build_data()
+    assert coordinator.data.decision.charge_now is False
+
+
 async def test_past_hours_pair_prices_with_logged_soc(
     hass: HomeAssistant, mock_client, freezer
 ) -> None:

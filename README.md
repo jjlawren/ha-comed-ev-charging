@@ -34,6 +34,7 @@ browser — an interactive plot of `T(SOC)`.
   in the cheapest forecast hours before departure (a pricier hour defers with
   `cheaper_later`), the SOC threshold is not applied (completion is mandatory), and if
   time runs short `charge_now` forces on (`must_charge`) to guarantee the deadline.
+  If the charge is still running at departure, it stays on until the target is reached.
 - A **live price spike** naturally suppresses charging, because the 5-minute price
   jumps above the threshold unless SOC pressure (or a deadline) justifies paying it.
 
