@@ -45,6 +45,8 @@ def _threshold_attrs(data: ComEdData) -> Mapping[str, Any]:
     }
     if d is not None:
         attrs["threshold"] = round(d.threshold, 2)
+        attrs["on_threshold"] = round(d.on_threshold, 2)
+        attrs["deadband"] = round(d.deadband, 2)
         attrs["urgency"] = round(d.urgency, 3)
         attrs["gamma"] = d.gamma
     return attrs
