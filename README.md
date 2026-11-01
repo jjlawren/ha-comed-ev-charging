@@ -52,7 +52,7 @@ number entities.
 | `binary_sensor.comed_ev_charging_charge_now` | The automation trigger. Attributes: `reason`, `live_price`, `threshold`, and (deadline mode) `slack_hours`. |
 | `sensor.comed_ev_charging_5_minute_spot_price` | Live 5-minute price (¢/kWh). |
 | `sensor.comed_ev_charging_current_hour_average_price` | Current-hour average price. |
-| `sensor.comed_ev_charging_charge_threshold` | Current `T(SOC)`; attributes: floor/ceiling, mode. |
+| `sensor.comed_ev_charging_charge_threshold` | Current `T(SOC)`; attributes: floor/ceiling, mode, `on_threshold` (the bar to start charging: T minus `deadband`), `deadband`. |
 | `sensor.comed_ev_charging_projected_end_soc` | Deadline mode only: projected SOC at departure. |
 | `sensor.comed_ev_charging_charge_schedule` | Charging hours ahead (state). Attributes: `hours` (per-hour `hour_ending`, `price`, `source`, `charging`, `projected_soc`), `mode` (`deadline`/`opportunistic`), `ready_time`, `charging_energy_kwh`, `estimated_cost`. Backs the schedule card; `hours` is excluded from the recorder. |
 | `sensor.comed_ev_charging_energy_needed_to_target` | Wall energy (kWh) to reach target SOC (target−current, divided by efficiency). |
