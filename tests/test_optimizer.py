@@ -408,6 +408,13 @@ def test_deadline_must_charge_when_slack_gone():
     assert d.reason == REASON_MUST_CHARGE
 
 
+def test_past_deadline_keeps_charging_until_stop():
+    d = _decide(60, 55.0, past_deadline=True)  # spike price, deadline missed
+    assert d.charge_now is True
+    assert d.reason == REASON_MUST_CHARGE
+    assert _decide(80, 55.0, past_deadline=True).reason == REASON_TARGET_REACHED
+
+
 # --- plan_charge -------------------------------------------------------------
 
 

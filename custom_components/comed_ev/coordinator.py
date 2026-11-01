@@ -93,6 +93,7 @@ from .optimizer import (
     MODE_OPPORTUNISTIC,
     REASON_CHEAPER_LATER,
     REASON_MIN_OFF_LOCKOUT,
+    REASON_MUST_CHARGE,
     SOURCE_FALLBACK,
     ChargeCost,
     ChargeDecision,
@@ -638,6 +639,15 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
                 self._last_off_utc is not None
                 and (now - self._last_off_utc) < timedelta(seconds=MIN_OFF_SECONDS)
             )
+            # Departure passed mid-run: a deadline run (or its continuation) that
+            # was still charging keeps charging until the stop, not off at once.
+            prev = self.data.decision if self.data is not None else None
+            past_deadline = (
+                departure is None
+                and bool(self._charge_state)
+                and prev is not None
+                and (prev.plan is not None or prev.reason == REASON_MUST_CHARGE)
+            )
             decision = should_charge_now(
                 now,
                 current_soc,
@@ -656,6 +666,7 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
                 charge_accepting=self._get_bool(
                     self.config_entry.data.get(CONF_CHARGE_ACCEPTING_ENTITY)
                 ),
+                past_deadline=past_deadline,
             )
             if decision.reason == REASON_MIN_OFF_LOCKOUT:
                 # A would-be ON was actually held; remember it for the eventual

@@ -254,6 +254,7 @@ def should_charge_now(
     deadband: float = 0.0,
     min_off_active: bool = False,
     charge_accepting: bool | None = None,
+    past_deadline: bool = False,
 ) -> ChargeDecision:
     """Decide whether to charge right now against the running hourly average.
 
@@ -282,6 +283,8 @@ def should_charge_now(
       2. slack <= 0                         -> on   (must_charge)
       3. >= hours_needed cheaper hours left -> off  (cheaper_later)
       4. else                               -> on   (cheapest_hours)
+    `past_deadline` (departure passed with the charge still running) keeps
+    `must_charge` on until the stop, so a missed deadline never turns it off.
 
     Opportunistic mode (no deadline) never forces completion. It caps
     willingness-to-pay at the SOC threshold and, within that, reserves the
@@ -353,6 +356,9 @@ def should_charge_now(
             return decide(False, REASON_TARGET_REACHED)
     elif not charge_accepting:
         return decide(False, REASON_NOT_ACCEPTING)
+
+    if past_deadline:
+        return decide(True, REASON_MUST_CHARGE)
 
     if plan is not None:
         # Deadline mode: complete by departure, scheduled into the cheapest
