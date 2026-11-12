@@ -160,3 +160,33 @@ async def test_persisted_settings_win_over_options(
     assert settings.price_floor == 4.2
     assert settings.window_days == 14
     assert settings.flat_rate == 8.0
+
+
+async def test_charge_override_forces_charge_now_under_ceiling(
+    hass: HomeAssistant, mock_client
+) -> None:
+    """The override turns charge_now on at target, and only under the ceiling."""
+    hass.states.async_set("sensor.ev_soc", "80")
+    hass.states.async_set("number.ev_target", "80")
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = entry.runtime_data
+    charge = "binary_sensor.comed_ev_charging_charge_now"
+    assert hass.states.get(charge).state == "off"
+
+    await hass.services.async_call(
+        "switch",
+        "turn_on",
+        {"entity_id": "switch.comed_ev_charging_charge_override"},
+        blocking=True,
+    )
+    assert hass.states.get(charge).state == "on"
+    assert hass.states.get(charge).attributes["reason"] == "override"
+
+    # An hourly average above the ceiling releases the override.
+    coordinator._last_hourly_price = coordinator.data.effective_ceiling + 1
+    coordinator._publish()
+    await hass.async_block_till_done()
+    assert hass.states.get(charge).state == "off"

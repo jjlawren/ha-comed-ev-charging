@@ -74,7 +74,8 @@
       "charge_now": { "name": "Charge now" }
     },
     "switch": {
-      "threshold_auto": { "name": "Automatic thresholds" }
+      "threshold_auto": { "name": "Automatic thresholds" },
+      "charge_override": { "name": "Charge override" }
     },
     "number": {
       "price_floor": { "name": "Price floor" },

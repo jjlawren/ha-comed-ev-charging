@@ -697,6 +697,8 @@ function txDescribe(t) {
       return "Deadline forced charging.";
     case "cheapest_hours":
       return "Reserved a cheapest hour.";
+    case "override":
+      return "Manual override.";
     default:
       return t.reason || "";
   }

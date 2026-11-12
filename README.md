@@ -51,6 +51,7 @@ number entities.
 | Entity | Description |
 | --- | --- |
 | `binary_sensor.comed_ev_charging_charge_now` | The automation trigger. Attributes: `reason`, `live_price`, `threshold`, and (deadline mode) `slack_hours`. |
+| `switch.comed_ev_charging_charge_override` | Manual override: forces `charge_now` on while the current-hour average price is at or below the effective ceiling. Ignores the SOC target. The charge is tracked as a normal session. |
 | `sensor.comed_ev_charging_5_minute_spot_price` | Live 5-minute price (¢/kWh). |
 | `sensor.comed_ev_charging_current_hour_average_price` | Current-hour average price. |
 | `sensor.comed_ev_charging_charge_threshold` | Current `T(SOC)`; attributes: floor/ceiling, mode, `on_threshold` (the bar to start charging: T minus `deadband`), `deadband`. |
@@ -70,8 +71,8 @@ number entities.
 hour is among the cheapest still needed), `above_threshold`, `target_reached`,
 `not_accepting` (the wired vehicle-accepting-charge entity reports the vehicle stopped
 taking current — see below), `cheaper_later` (deferring for cheaper hours ahead),
-`cheapest_hours` (deadline, current hour is among the cheapest needed), and `must_charge`
-(deadline, out of slack).
+`cheapest_hours` (deadline, current hour is among the cheapest needed), `must_charge`
+(deadline, out of slack), and `override` (the charge-override switch is on).
 
 ## Session cost reporting
 
@@ -199,22 +200,91 @@ Tuning knobs are not asked for at setup — they are live entities you adjust an
 
 ## Example automation
 
+This automation drives the charger from `charge_now`. Replace
+`switch.ev_charger` (the charger on/off switch) and `binary_sensor.ev_plugged_in`
+(on when the vehicle is plugged in) with your own entities.
+
+- It sets the charger only when the charger state is different from `charge_now`,
+  so it does not send unnecessary commands.
+- It syncs again on plug-in and on Home Assistant start.
+- It does not change the charger while `charge_now` is `unknown` or `unavailable`.
+- On unplug, it turns off the **Charge override** switch, so the override applies to
+  one plug-in only.
+- When you turn on the charger manually (UI, charger app, or the charger) while the
+  vehicle is plugged in and `charge_now` is off, it turns on **Charge override**, so the charge is recorded. A
+  change that the automation makes has a parent context, so it is not counted as manual.
+
 ```yaml
-automation:
-  - alias: "EV: charge on ComEd cheap signal"
-    trigger:
-      - platform: state
-        entity_id: binary_sensor.comed_ev_charging_charge_now
-    action:
-      - choose:
-          - conditions: "{{ is_state('binary_sensor.comed_ev_charging_charge_now', 'on') }}"
-            sequence:
-              - service: switch.turn_on
-                target: { entity_id: switch.ev_charger }
-        default:
-          - service: switch.turn_off
-            target: { entity_id: switch.ev_charger }
+alias: "EV: follow ComEd charge_now"
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.comed_ev_charging_charge_now
+    to: ~
+  - trigger: state
+    entity_id: binary_sensor.ev_plugged_in
+    to: "on"
+  - trigger: state
+    entity_id: binary_sensor.ev_plugged_in
+    to: "off"
+    id: unplugged
+  - trigger: state
+    entity_id: switch.ev_charger
+    from: "off"
+    to: "on"
+    id: manual_on
+  - trigger: homeassistant
+    event: start
+actions:
+  - if:
+      - condition: trigger
+        id: manual_on
+    then:
+      - if:
+          # No parent context: not set by an automation (UI, app, or charger).
+          - "{{ trigger.to_state.context.parent_id is none }}"
+          # Plugged in: a turn-on with no car must not arm the next plug-in.
+          - condition: state
+            entity_id: binary_sensor.ev_plugged_in
+            state: "on"
+          # charge_now off: the integration did not ask for this charge.
+          - condition: state
+            entity_id: binary_sensor.comed_ev_charging_charge_now
+            state: "off"
+        then:
+          - action: switch.turn_on
+            target:
+              entity_id: switch.comed_ev_charging_charge_override
+      - stop: manual_on
+  - if:
+      - condition: trigger
+        id: unplugged
+    then:
+      - action: switch.turn_off
+        target:
+          entity_id: switch.comed_ev_charging_charge_override
+      - stop: unplugged
+  - condition: state
+    entity_id: binary_sensor.ev_plugged_in
+    state: "on"
+  - condition: state
+    entity_id: binary_sensor.comed_ev_charging_charge_now
+    state:
+      - "on"
+      - "off"
+  - variables:
+      want: "{{ is_state('binary_sensor.comed_ev_charging_charge_now', 'on') }}"
+  - condition: template
+    value_template: "{{ want != is_state('switch.ev_charger', 'on') }}"
+  - action: "switch.turn_{{ 'on' if want else 'off' }}"
+    target:
+      entity_id: switch.ev_charger
+mode: restart
 ```
+
+To charge now at a price that is not in the cheap band, turn on **Charge override** or
+turn on the charger. The integration records a charge only when it comes from
+`charge_now`. The override does not apply above the effective ceiling, so a manual charge at
+that price is not recorded.
 
 ## Controls
 
@@ -223,6 +293,9 @@ automation, or voice; changes apply immediately (no reload) and survive restarts
 
 - **Automatic thresholds** (switch) — on tracks the analytics suggestion; off pins the
   manual floor/ceiling below.
+- **Charge override** (switch) — forces `charge_now` on while the current-hour average price
+  is at or below the effective ceiling, also above the SOC target. The example automation
+  turns it off on unplug.
 - **Price floor** / **Price ceiling** (¢/kWh) — the pinned band used when the switch is
   off.
 - **Urgency-full SOC** and **Curve steepness (gamma)** — shape the willingness-to-pay

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime, timedelta
 from functools import partial
 import json
@@ -94,6 +94,7 @@ from .optimizer import (
     REASON_CHEAPER_LATER,
     REASON_MIN_OFF_LOCKOUT,
     REASON_MUST_CHARGE,
+    REASON_OVERRIDE,
     SOURCE_FALLBACK,
     ChargeCost,
     ChargeDecision,
@@ -164,6 +165,8 @@ class ComEdSettings:
     window_days: int
     flat_rate: float
     distribution_rate: float
+    # Manual override: charge while the hourly average is <= the effective ceiling.
+    charge_override: bool = False
 
     @classmethod
     def from_options(cls, options: dict) -> ComEdSettings:
@@ -668,6 +671,12 @@ class ComEdCoordinator(DataUpdateCoordinator[ComEdData]):
                 ),
                 past_deadline=past_deadline,
             )
+            if (
+                self.settings.charge_override
+                and not decision.charge_now
+                and decision_price <= ceiling
+            ):
+                decision = replace(decision, charge_now=True, reason=REASON_OVERRIDE)
             if decision.reason == REASON_MIN_OFF_LOCKOUT:
                 # A would-be ON was actually held; remember it for the eventual
                 # start edge, so the record marks a lockout-delayed start.
