@@ -22,6 +22,8 @@ REASON_ABOVE_THRESHOLD = "above_threshold"
 REASON_CHEAPER_LATER = "cheaper_later"
 REASON_CHEAPEST_HOURS = "cheapest_hours"
 REASON_MIN_OFF_LOCKOUT = "min_off_lockout"
+# The charge-override switch forced charging while the hourly average is <= ceiling.
+REASON_OVERRIDE = "override"
 
 # Forecast provenance, best-to-worst.
 SOURCE_DAY_AHEAD = "day_ahead"
