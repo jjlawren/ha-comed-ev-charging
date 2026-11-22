@@ -169,8 +169,9 @@ class ComEdScheduleCard extends HTMLElement {
           this._render();
           return;
         }
-        if (!e.target.closest(".past-toggle")) return;
-        this._showPast = !this._showPast;
+        if (e.target.closest(".later-toggle")) this._showLater = !this._showLater;
+        else if (e.target.closest(".past-toggle")) this._showPast = !this._showPast;
+        else return;
         this._render();
       });
       this._card.addEventListener("keydown", (e) => {
@@ -261,20 +262,29 @@ class ComEdScheduleCard extends HTMLElement {
          ${this._showPast ? pastHtml + `<div class="now-line"></div>` : ""}`
       : scaleHtml;
 
-    const rowsHtml = hours
-      .map((h) => {
-        const cls = `row ${h.charging ? "charge" : "skip"}${h.price < 0 ? " neg" : ""}`;
-        const soc = h.projected_soc == null ? "" : `${Math.round(h.projected_soc)}%`;
-        return `
-          <div class="${cls}">
-            <span class="time">${fmtHour(h.hour_ending)}</span>
-            <div class="track">${zeroLine}${bar(h.price, "fill")}</div>
-            <span class="price">${Number(h.price).toFixed(1)}</span>
-            ${bolt(h.charging)}
-            <span class="soc">${soc}</span>
-          </div>`;
-      })
-      .join("");
+    // Past the target, the rest is an idle tail: show through the hour after
+    // it is reached and fold the remainder behind "Show later".
+    const cutoff = a.ready_time ? Date.parse(a.ready_time) + 3600e3 : Infinity;
+    const split = hours.findIndex((h) => Date.parse(h.hour_ending) > cutoff);
+    const later = split < 0 ? [] : hours.slice(split);
+    const rowHtml = (h) => {
+      const cls = `row ${h.charging ? "charge" : "skip"}${h.price < 0 ? " neg" : ""}`;
+      const soc = h.projected_soc == null ? "" : `${Math.round(h.projected_soc)}%`;
+      return `
+        <div class="${cls}">
+          <span class="time">${fmtHour(h.hour_ending)}</span>
+          <div class="track">${zeroLine}${bar(h.price, "fill")}</div>
+          <span class="price">${Number(h.price).toFixed(1)}</span>
+          ${bolt(h.charging)}
+          <span class="soc">${soc}</span>
+        </div>`;
+    };
+    const shown = later.length && !this._showLater ? hours.slice(0, split) : hours;
+    const rowsHtml =
+      shown.map(rowHtml).join("") +
+      (later.length
+        ? `<button class="past-toggle later-toggle">${this._showLater ? "Hide" : "Show"} later (${later.length})</button>`
+        : "");
 
     const modeChip = deadline
       ? `<span class="chip accent">Deadline</span>`

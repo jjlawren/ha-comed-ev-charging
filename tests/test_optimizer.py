@@ -627,9 +627,9 @@ def test_schedule_projected_soc_rises_then_holds_at_target():
         departure=base + timedelta(hours=6),
     )
     socs = [h.projected_soc for h in schedule.hours]
-    # 50 (skip), 50 (skip), 65 (charge), 80 (charge), 80 — rises, caps, then the
-    # idle tail past the target is trimmed to the one hour after it is reached.
-    assert socs == pytest.approx([50.0, 50.0, 65.0, 80.0, 80.0])
+    # 50 (skip), 50 (skip), 65 (charge), 80 (charge), then holds at 80. The card
+    # folds the idle tail behind "Show later".
+    assert socs == pytest.approx([50.0, 50.0, 65.0, 80.0, 80.0, 80.0])
 
 
 def test_schedule_deadline_charges_pricey_hours_when_window_is_tight():

@@ -538,12 +538,6 @@ def project_schedule(
             ScheduleHour(hour.hour_ending, hour.price, hour.source, charging, soc)
         )
 
-    # Show every projected hour, but once the target is reached the rest is an
-    # idle tail — keep only through the hour after it is first reached.
-    if ready_time is not None:
-        cutoff = ready_time + timedelta(hours=1)
-        hours = [h for h in hours if h.hour_ending <= cutoff]
-
     charge_cost: ChargeCost | None = None
     if charging_energy_kwh > 0:
         supply_cost = supply_cents / 100.0
